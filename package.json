@@ -1,5 +1,5 @@
 {
-  "name": "livedb-mongo",
+  "name": "k-livedb-mongo",
   "version": "0.4.1",
   "description": "MongoDB database adapter for livedb",
   "main": "index.js",
