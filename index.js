@@ -1,6 +1,6 @@
 var async = require('async');
 var mongodb = require('mongodb');
-var DB = require('sharedb').DB;
+var DB = require('k-sync').DB;
 
 module.exports = ShareDbMongo;
 
