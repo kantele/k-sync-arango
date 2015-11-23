@@ -279,6 +279,7 @@ ShareDbMongo.prototype.getOplogCollectionName = function(collectionName) {
 
 ShareDbMongo.prototype.validateCollectionName = function(collectionName) {
   if (
+    typeof collectionName !== 'string' ||
     collectionName === 'system' || (
       collectionName[0] === 'o' &&
       collectionName[1] === 'p' &&
