@@ -1,26 +1,23 @@
 var async = require('async');
-var mongodb = require('mongodb');
 var DB = require('k-sync').DB;
+var mongoAql = require('mongo-aql');
+var arangojs = require('arangojs');
 
-module.exports = ShareDbMongo;
+module.exports = SyncArango;
 
-function ShareDbMongo(mongo, options) {
+function SyncArango(url, options) {
   // use without new
-  if (!(this instanceof ShareDbMongo)) {
-    return new ShareDbMongo(mongo, options);
+  if (!(this instanceof SyncArango)) {
+    return new SyncArango(url, options);
   }
 
-  if (typeof mongo === 'object') {
-    options = mongo;
-    mongo = options.mongo;
-  }
   if (!options) options = {};
 
   // pollDelay is a dodgy hack to work around race conditions replicating the
   // data out to the polling target secondaries. If a separate db is specified
   // for polling, it defaults to 300ms
   this.pollDelay = (options.pollDelay != null) ? options.pollDelay :
-    (options.mongoPoll) ? 300 : 0;
+    (options.arangoPoll) ? 300 : 0;
 
   // By default, we create indexes on any ops collection that is used
   this.disableIndexCreation = options.disableIndexCreation || false;
@@ -47,49 +44,63 @@ function ShareDbMongo(mongo, options) {
   // Track whether the close method has been called
   this.closed = false;
 
-  if (typeof mongo === 'string') {
+  if (typeof url === 'string') {
     // We can only get the mongodb client instance in a callback, so
     // buffer up any requests received in the meantime
-    this.mongo = null;
-    this.mongoPoll = null;
+    this.arango = null;
+    this.arangoPoll = null;
     this.pendingConnect = [];
-    this._connect(mongo, options);
-  } else {
-    this.mongo = mongo;
-    this.mongoPoll = options.mongoPoll;
-    this.pendingConnect = null;
+    this._connect(url, options);
   }
 };
 
-ShareDbMongo.prototype = Object.create(DB.prototype);
+SyncArango.prototype = Object.create(DB.prototype);
 
-ShareDbMongo.prototype.projectsSnapshots = true;
+SyncArango.prototype.projectsSnapshots = true;
 
-ShareDbMongo.prototype.getCollection = function(collectionName, callback) {
+/*
+** We'll be creating collections on the fly, because that's handy.
+*/
+SyncArango.prototype.createCollection = function(collectionName, cb){
+  var self = this;
+
+  this.getDbs(function(err, db) {
+    if (err) return cb(err);
+    db.collection(collectionName).create(function (err) {
+      if (err) return cb(error(err));
+      db.collection(self.getOplogCollectionName(collectionName)).create(function (err) {
+        if (err) return cb(error(err));
+        cb();
+      });
+    });  
+  });  
+};
+
+SyncArango.prototype.getCollection = function(collectionName, callback) {
   // Check the collection name
   var err = this.validateCollectionName(collectionName);
   if (err) return callback(err);
   // Gotcha: calls back sync if connected or async if not
-  this.getDbs(function(err, mongo) {
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
-    var collection = mongo.collection(collectionName);
+    var collection = db.collection(collectionName);
     return callback(null, collection);
   });
 };
 
-ShareDbMongo.prototype._getCollectionPoll = function(collectionName, callback) {
+SyncArango.prototype._getCollectionPoll = function(collectionName, callback) {
   // Check the collection name
   var err = this.validateCollectionName(collectionName);
   if (err) return callback(err);
   // Gotcha: calls back sync if connected or async if not
-  this.getDbs(function(err, mongo, mongoPoll) {
+  this.getDbs(function(err, db, dbPoll) {
     if (err) return callback(err);
-    var collection = (mongoPoll || mongo).collection(collectionName);
+    var collection = (dbPoll || db).collection(collectionName);
     return callback(null, collection);
   });
 };
 
-ShareDbMongo.prototype.getCollectionPoll = function(collectionName, callback) {
+SyncArango.prototype.getCollectionPoll = function(collectionName, callback) {
   if (this.pollDelay) {
     var self = this;
     setTimeout(function() {
@@ -100,77 +111,68 @@ ShareDbMongo.prototype.getCollectionPoll = function(collectionName, callback) {
   this._getCollectionPoll(collectionName, callback);
 };
 
-ShareDbMongo.prototype.getDbs = function(callback) {
+SyncArango.prototype.getDbs = function(callback) {
   if (this.closed) {
     var err = {code: 5101, message: 'Already closed'};
     return callback(err);
   }
-  // We consider ouself ready to reply if this.mongo is defined and don't check
-  // this.mongoPoll, since it is optional and is null by default. Thus, it's
+  // We consider ouself ready to reply if this.arango is defined and don't check
+  // this.arangoPoll, since it is optional and is null by default. Thus, it's
   // important that these two properties are only set together synchronously
-  if (this.mongo) return callback(null, this.mongo, this.mongoPoll);
+  if (this.arango) return callback(null, this.arango, this.arangoPoll);
   this.pendingConnect.push(callback);
 };
 
-ShareDbMongo.prototype._flushPendingConnect = function() {
+SyncArango.prototype._flushPendingConnect = function() {
   var pendingConnect = this.pendingConnect;
   this.pendingConnect = null;
   for (var i = 0; i < pendingConnect.length; i++) {
-    pendingConnect[i](null, this.mongo, this.mongoPoll);
+    pendingConnect[i](null, this.arango, this.arangoPoll);
   }
 };
 
-ShareDbMongo.prototype._connect = function(mongo, options) {
-  var self = this;
+SyncArango.prototype._connect = function(url, options) {
+  var self = this,
+      dbName;
+
+  if (url) {
+    var urlParsed = require('url').parse(url);
+    if (urlParsed.path && urlParsed.path !== '/') {
+      dbName = urlParsed.path.substring(1);
+      url = urlParsed.protocol + '//' + urlParsed.host;
+    }
+  }
+
+  if (!dbName) {
+    throw new Error('Database not found: ', dbName);
+  }
+
+  // todo: implement this later
+
   // Create the mongo connection client connections if needed
-  if (options.mongoPoll) {
-    async.parallel({
-      mongo: function(parallelCb) {
-        mongodb.connect(mongo, options.mongoOptions, parallelCb);
-      },
-      mongoPoll: function(parallelCb) {
-        mongodb.connect(options.mongoPoll, options.mongoPollOptions, parallelCb);
-      }
-    }, function(err, results) {
-      // Just throw the error if we fail to connect, since we aren't
-      // implementing a way to retry
-      if (err) throw err;
-      self.mongo = results.mongo;
-      self.mongoPoll = results.mongoPoll;
-      self._flushPendingConnect();
-    });
-    return;
+  /*
+  if (options.arangoPoll) {
+    this.arango = new arangojs.Database(url);
+    this.arango.useDatabase(dbName)
+
+    self.arango = results.arango;
+    self.arangoPoll = results.arangoPoll;
+    this._flushPendingConnect();
   }
-  mongodb.connect(mongo, options, function(err, db) {
-    if (err) throw err;
-    self.mongo = db;
-    self._flushPendingConnect();
-  });
+  else {*/
+    this.arango = new arangojs.Database(url);
+    this.arango.useDatabase(dbName)
+    this._flushPendingConnect();
+  // }
 };
-
-ShareDbMongo.prototype.close = function(callback) {
-  var self = this;
-  this.getDbs(function(err, mongo, mongoPoll) {
-    if (err) return callback && callback(err);
-    self.closed = true;
-    var closeCb = (mongoPoll) ?
-      function(err) {
-        if (err) return callback && callback(err);
-        mongoPoll.close(callback);
-      } :
-      callback;
-    mongo.close(closeCb);
-  });
-};
-
 
 // **** Commit methods
 
-ShareDbMongo.prototype.commit = function(collectionName, id, op, snapshot, callback) {
+SyncArango.prototype.commit = function(collectionName, id, op, snapshot, callback) {
   var self = this;
   this._writeOp(collectionName, id, op, snapshot, function(err, result) {
     if (err) return callback(err);
-    var opId = result.insertedId;
+    var opId = result._key;
     self._writeSnapshot(collectionName, id, snapshot, opId, function(err, succeeded) {
       if (succeeded) return callback(err, succeeded);
       // Cleanup unsuccessful op if snapshot write failed. This is not
@@ -182,7 +184,7 @@ ShareDbMongo.prototype.commit = function(collectionName, id, op, snapshot, callb
   });
 };
 
-ShareDbMongo.prototype._writeOp = function(collectionName, id, op, snapshot, callback) {
+SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callback) {
   if (typeof op.v !== 'number') {
     var err = {
       code: 4101,
@@ -195,35 +197,42 @@ ShareDbMongo.prototype._writeOp = function(collectionName, id, op, snapshot, cal
     var doc = shallowClone(op);
     doc.d = id;
     doc.o = snapshot._opLink;
-    opCollection.insertOne(doc, callback);
+    var promise = opCollection.save(doc, function(err, result) {
+        if (err) return callback(error(error));
+        var succeeded = result && !!result.updated;
+        callback(null, succeeded);
+      });
   });
 };
 
-ShareDbMongo.prototype._deleteOp = function(collectionName, opId, callback) {
+SyncArango.prototype._deleteOp = function(collectionName, opId, callback) {
   this.getOpCollection(collectionName, function(err, opCollection) {
     if (err) return callback(err);
-    opCollection.deleteOne({_id: opId}, callback);
+    var promise = opCollection.remove(opId, function(err, result) {
+        if (err) return callback(error(error));
+        callback(null);
+      });
   });
 };
 
-ShareDbMongo.prototype._writeSnapshot = function(collectionName, id, snapshot, opLink, callback) {
+SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opLink, callback) {
   this.getCollection(collectionName, function(err, collection) {
     if (err) return callback(err);
     var doc = castToDoc(id, snapshot, opLink);
     if (doc._v === 1) {
-      collection.insertOne(doc, function(err, result) {
+      collection.save(doc, function(err, result) {
         if (err) {
           // Return non-success instead of duplicate key error, since this is
           // expected to occur during simultaneous creates on the same id
-          if (err.code === 11000) return callback(null, false);
-          return callback(err);
+          if (err.errorNum === 1210) return callback(null, false);
+          return callback(error(err));
         }
         callback(null, true);
       });
     } else {
-      collection.replaceOne({_id: id, _v: doc._v - 1}, doc, function(err, result) {
-        if (err) return callback(err);
-        var succeeded = !!result.modifiedCount;
+      collection.updateByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
+        if (err) return callback(error(error));
+        var succeeded = result && !!result.updated;
         callback(null, succeeded);
       });
     }
@@ -233,38 +242,74 @@ ShareDbMongo.prototype._writeSnapshot = function(collectionName, id, snapshot, o
 
 // **** Snapshot methods
 
-ShareDbMongo.prototype.getSnapshot = function(collectionName, id, fields, callback) {
+SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback) {
+  console.log('SyncArango.prototype.getSnapshot', collectionName, id, fields);
+
   this.getCollection(collectionName, function(err, collection) {
     if (err) return callback(err);
-    var query = {_id: id};
+
     var projection = getProjection(fields);
-    collection.findOne(query, projection, function(err, doc) {
-      if (err) return callback(err);
-      var snapshot = (doc) ? castToSnapshot(doc) : new MongoSnapshot(id, 0, null, null);
-      callback(null, snapshot);
+    collection.document(id, function(err, doc) {
+      console.log('getSnapshot', error(err));
+      console.log('getSnapshot', doc);
+
+      if (err) {
+        // 1202 is "document not found"
+        // 1203 is "collection not found"
+        // in that case we'll create the collection and return empty array
+        if (err.errorNum === 1203) {
+          return self.createCollection(collectionName, function() { callback(null, null); });
+        }
+        else if (err.errorNum === 1202) {
+          err = doc = null;
+        }
+      }
+
+      if (err) {
+        callback(error(err));
+      }
+      else {
+        var snapshot = (doc) ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
+
+        callback(null, snapshot);
+      }
     });
   });
 };
 
-ShareDbMongo.prototype.getSnapshotBulk = function(collectionName, ids, fields, callback) {
+SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, callback) {
   this.getCollection(collectionName, function(err, collection) {
     if (err) return callback(err);
-    var query = {_id: {$in: ids}};
-    var projection = getProjection(fields);
-    collection.find(query, projection).toArray(function(err, docs) {
-      if (err) return callback(err);
-      var snapshotMap = {};
-      for (var i = 0; i < docs.length; i++) {
-        var snapshot = castToSnapshot(docs[i]);
-        snapshotMap[snapshot.id] = snapshot;
+    var queryObject = { _key: { $in: ids } },
+        q = mongoAql(collectionName, queryObject),
+        projection = getProjection(fields);
+
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err && err.errorNum === 1203) {
+        return self.createCollection(collectionName, function() { callback(); });
       }
-      var uncreated = [];
-      for (var i = 0; i < ids.length; i++) {
-        var id = ids[i];
-        if (snapshotMap[id]) continue;
-        snapshotMap[id] = new MongoSnapshot(id, 0, null, null);
+      else if (err) {
+        callback(error(err));
       }
-      callback(null, snapshotMap);
+      else {
+        cursor.all(function(err, data) {
+          var snapshotMap = {},
+              uncreated = [];
+
+          for (var i = 0; i < docs.length; i++) {
+            var snapshot = castToProjectedSnapshot(docs[i], projection);
+            snapshotMap[snapshot.id] = snapshot;
+          }
+
+          for (var i = 0; i < ids.length; i++) {
+            var id = ids[i];
+            if (snapshotMap[id]) continue;
+            snapshotMap[id] = new ArangoSnapshot(id, 0, null, null);
+          }
+
+          callback(null, snapshotMap);
+        });
+      }
     });
   });
 };
@@ -273,11 +318,11 @@ ShareDbMongo.prototype.getSnapshotBulk = function(collectionName, ids, fields, c
 // **** Oplog methods
 
 // Overwrite me if you want to change this behaviour.
-ShareDbMongo.prototype.getOplogCollectionName = function(collectionName) {
+SyncArango.prototype.getOplogCollectionName = function(collectionName) {
   return 'ops_' + collectionName;
 };
 
-ShareDbMongo.prototype.validateCollectionName = function(collectionName) {
+SyncArango.prototype.validateCollectionName = function(collectionName) {
   if (
     typeof collectionName !== 'string' ||
     collectionName === 'system' || (
@@ -292,20 +337,23 @@ ShareDbMongo.prototype.validateCollectionName = function(collectionName) {
 };
 
 // Get and return the op collection from mongo, ensuring it has the op index.
-ShareDbMongo.prototype.getOpCollection = function(collectionName, callback) {
+SyncArango.prototype.getOpCollection = function(collectionName, callback) {
   var self = this;
-  this.getDbs(function(err, mongo) {
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
     var name = self.getOplogCollectionName(collectionName);
-    var collection = mongo.collection(name);
+    var collection = db.collection(name);
+
     // Given the potential problems with creating indexes on the fly, it might
     // be preferrable to disable automatic creation
     if (self.disableIndexCreation) {
       return callback(null, collection);
     }
+
     if (self.opIndexes[collectionName]) {
       return callback(null, collection);
     }
+
     // WARNING: Creating indexes automatically like this is quite dangerous in
     // production if we are starting with a lot of data and no indexes
     // already. If new indexes were added or definition of these indexes were
@@ -314,17 +362,18 @@ ShareDbMongo.prototype.getOpCollection = function(collectionName, callback) {
     // collection this won't be a problem, but this is a dangerous mechanism.
     // Perhaps we should only warn instead of creating the indexes, especially
     // when there is a lot of data in the collection.
-    collection.createIndex({d: 1, v: 1}, {background: true}, function(err) {
-      if (err) return callback(err);
+
+    collection.createHashIndex([ 'd', 'v' ], function(error, index) {
+      if (error) console.warn('Warning: Could not create index for op collection:', error.stack || error);
       self.opIndexes[collectionName] = true;
       callback(null, collection);
     });
   });
 };
 
-ShareDbMongo.prototype.getOpsToSnapshot = function(collectionName, id, from, snapshot, callback) {
+SyncArango.prototype.getOpsToSnapshot = function(collectionName, id, from, snapshot, callback) {
   if (snapshot._opLink == null) {
-    var err = getSnapshotOpLinkErorr(collectionName, id);
+    var err = getSnapshotOpLinkError(collectionName, id);
     return callback(err);
   }
   this._getOps(collectionName, id, from, function(err, ops) {
@@ -336,10 +385,12 @@ ShareDbMongo.prototype.getOpsToSnapshot = function(collectionName, id, from, sna
   });
 };
 
-ShareDbMongo.prototype.getOps = function(collectionName, id, from, to, callback) {
+SyncArango.prototype.getOps = function(collectionName, id, from, to, callback) {
   var self = this;
+
   this._getSnapshotOpLink(collectionName, id, function(err, doc) {
     if (err) return callback(err);
+
     if (doc) {
       if (isCurrentVersion(doc, from)) {
         return callback(null, []);
@@ -347,6 +398,7 @@ ShareDbMongo.prototype.getOps = function(collectionName, id, from, to, callback)
       var err = doc && checkDocHasOp(collectionName, id, doc);
       if (err) return callback(err);
     }
+
     self._getOps(collectionName, id, from, function(err, ops) {
       if (err) return callback(err);
       var filtered = filterOps(ops, doc, to);
@@ -357,36 +409,44 @@ ShareDbMongo.prototype.getOps = function(collectionName, id, from, to, callback)
   });
 };
 
-ShareDbMongo.prototype.getOpsBulk = function(collectionName, fromMap, toMap, callback) {
-  var self = this;
-  var ids = Object.keys(fromMap);
+SyncArango.prototype.getOpsBulk = function(collectionName, fromMap, toMap, callback) {
+  var self = this,
+      ids = Object.keys(fromMap);
+
   this._getSnapshotOpLinkBulk(collectionName, ids, function(err, docs) {
     if (err) return callback(err);
     var docMap = getDocMap(docs);
+
     // Add empty array for snapshot versions that are up to date and create
     // the query conditions for ops that we need to get
-    var conditions = [];
-    var opsMap = {};
+    var conditions = [],
+        opsMap = {};
+
     for (var i = 0; i < ids.length; i++) {
-      var id = ids[i];
-      var doc = docMap[id];
-      var from = fromMap[id];
+      var id = ids[i],
+          doc = docMap[id],
+          from = fromMap[id];
+
       if (doc) {
         if (isCurrentVersion(doc, from)) {
           opsMap[id] = [];
           continue;
         }
+
         var err = checkDocHasOp(collectionName, id, doc);
         if (err) return callback(err);
       }
+
       conditions.push({
         d: id,
-        v: {$gte: from}
+        v: { $gte: from }
       });
     }
+
     // Return right away if none of the snapshot versions are newer than the
     // requested versions
     if (!conditions.length) return callback(null, opsMap);
+
     // Otherwise, get all of the ops that are newer
     self._getOpsBulk(collectionName, conditions, function(err, opsBulk) {
       if (err) return callback(err);
@@ -414,7 +474,7 @@ function checkOpsFrom(collectionName, id, ops, from) {
   }
 };
 
-function getSnapshotOpLinkErorr(collectionName, id) {
+function getSnapshotOpLinkError(collectionName, id) {
   return {
     code: 5102,
     message: 'Snapshot missing last operation field "_o" ' + collectionName + '.' + id
@@ -423,7 +483,7 @@ function getSnapshotOpLinkErorr(collectionName, id) {
 
 function checkDocHasOp(collectionName, id, doc) {
   if (doc._o) return;
-  return getSnapshotOpLinkErorr(collectionName, id);
+  return getSnapshotOpLinkError(collectionName, id);
 }
 
 function isCurrentVersion(doc, version) {
@@ -434,7 +494,7 @@ function getDocMap(docs) {
   var docMap = {};
   for (var i = 0; i < docs.length; i++) {
     var doc = docs[i];
-    docMap[doc._id] = doc;
+    docMap[doc._key] = doc;
   }
   return docMap;
 }
@@ -473,7 +533,7 @@ function filterOps(ops, doc, to) {
     // written but not the snapshot. Note that this will simply return no ops
     // if there are ops but the snapshot doesn't exist.
     if (!deleteOp) return [];
-    return getLinkedOps(ops, to, deleteOp._id);
+    return getLinkedOps(ops, to, deleteOp._key);
   }
   return getLinkedOps(ops, to, doc._o);
 }
@@ -489,10 +549,11 @@ function getLinkedOps(ops, to, link) {
   var linkedOps = []
   for (var i = ops.length; i-- && link;) {
     var op = ops[i];
-    if (link.equals ? !link.equals(op._id) : link !== op._id) continue;
+    if (link.equals ? !link.equals(op._key) : link !== op._key) continue;
     link = op.o;
     if (to == null || op.v < to) {
       delete op._id;
+      delete op._key;
       delete op.o;
       linkedOps.unshift(op);
     }
@@ -500,45 +561,94 @@ function getLinkedOps(ops, to, link) {
   return linkedOps;
 }
 
-ShareDbMongo.prototype._getOps = function(collectionName, id, from, callback) {
-  this.getOpCollection(collectionName, function(err, opCollection) {
+SyncArango.prototype._getOps = function(collectionName, id, from, callback) {
+  var self = this;
+
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
-    var query = {
-      $query: {
-        d: id,
-        v: {$gte: from}
-      },
+
+    var queryObject = {
+      d: id,
+      v: {$gte: from},
       $orderby: {v: 1}
     };
+
     // Exclude the `d` field, which is only for use internal to livedb-mongo.
     // Also exclude the `m` field, which can be used to store metadata on ops
     // for tracking purposes
-    var projection = {d: 0, m: 0};
-    opCollection.find(query, projection).toArray(callback);
+    var projection = {d: 0, m: 0},
+        q = mongoAql(self.getOplogCollectionName(collectionName), queryObject);
+
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err) {
+        // 1202 is "document not found"
+        // 1203 is "collection not found"
+        // in that case we'll create the collection and return empty array
+        if (err.errorNum === 1203) {
+          return self.createCollection(collectionName, function() { callback(null, []); });
+        }
+        else if (err.errorNum === 1202) {
+          return callback(null, []);
+        }
+      }
+
+      if (err) {
+        return callback(error(err), []);
+      }
+
+      cursor.all(function (err, data) {
+        if (err) return callback(error(err), []);
+
+        // Strip out d, m in the results
+        for (var i = 0; i < data.length; i++) {
+          delete data[i].d;
+          delete data[i].m;
+        }
+
+        callback(null, data);
+      });
+    });    
+
   });
 };
 
-ShareDbMongo.prototype._getOpsBulk = function(collectionName, conditions, callback) {
-  this.getOpCollection(collectionName, function(err, opCollection) {
+SyncArango.prototype._getOpsBulk = function(collectionName, conditions, callback) {
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
-    var query = {
-      $query: {$or: conditions},
-      $orderby: {d: 1, v: 1}
-    };
+
+    var queryObject = {
+          $or: conditions,
+          $orderby: {d: 1, v: 1}
+        },
+        q = mongoAql(collectionName, queryObject);
+
     // Exclude the `m` field, which can be used to store metadata on ops for
     // tracking purposes
-    var projection = {m: 0};
-    opCollection.find(query, projection, function(err, cursor) {
-      if (err) return callback(err);
+    // do this in readOpsBulk
+    var projection = { m: 0 };
+
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err) {
+        // 1202 is "document not found"
+        // in that case we'll create the collection and return empty array
+        if (err.errorNum === 1203) {
+          return self.createCollection(collectionName, function() { callback(null, {}); });
+        }
+      }
+
+      if (err) {
+        return callback(error(err));
+      }
+
       readOpsBulk(cursor, {}, null, null, callback);
     });
   });
 };
 
 function readOpsBulk(cursor, opsMap, id, ops, callback) {
-  cursor.nextObject(function(err, op) {
-    if (err) return callback(err);
-    if (op == null) {
+  cursor.next(function(err, op) {
+    if (err) return callback(error(err));
+    if (!op) {
       if (id) opsMap[id] = ops;
       return callback(null, opsMap);
     }
@@ -550,32 +660,61 @@ function readOpsBulk(cursor, opsMap, id, ops, callback) {
       ops.push(op);
     }
     delete op.d;
+    delete op.m;
     readOpsBulk(cursor, opsMap, id, ops, callback);
   });
 }
 
-ShareDbMongo.prototype._getSnapshotOpLink = function(collectionName, id, callback) {
+SyncArango.prototype._getSnapshotOpLink = function(collectionName, id, callback) {
   this.getCollection(collectionName, function(err, collection) {
     if (err) return callback(err);
-    var query = {_id: id};
     var projection = {_id: 0, _o: 1, _v: 1};
-    collection.findOne(query, projection, callback);
+    collection.document(id, function(err, doc) {
+      if (err && err.errorNum === 1203) {
+        return self.createCollection(collectionName, function() { callback(); });
+      }
+
+      callback(error(err), castToProjected(doc, projection));
+    });
   });
 };
 
-ShareDbMongo.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, callback) {
-  this.getCollection(collectionName, function(err, collection) {
+SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, callback) {
+  var self = this;
+
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
-    var query = {_id: {$in: ids}};
-    var projection = {_o: 1, _v: 1};
-    collection.find(query, projection).toArray(callback);
+
+    var queryObject = { _key: { $in: ids } },
+        q = mongoAql(collectionName, queryObject),
+        projection = { _key: 1, _id: 1, _o: 1, _v: 1 };
+
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err && err.errorNum === 1203) {
+        return self.createCollection(collectionName, function() { callback(null, []); });
+      }
+      else if (err) {
+        callback(error(err));
+      }
+      else {
+        cursor.all(function(err, data) {
+          var res = [];
+
+          for (var i = 0; i < data.length; i++) {
+            res.push(castToProjected(data[i], projection));
+          }
+
+          callback(null, res);
+        });
+      }
+    });
   });
 };
 
 
 // **** Query methods
-
-ShareDbMongo.prototype._query = function(collection, inputQuery, projection, callback) {
+/*
+SyncArango.prototype._query = function(collection, inputQuery, projection, callback) {
   var query = normalizeQuery(inputQuery);
   var err = this.checkQuery(query);
   if (err) return callback(err);
@@ -619,41 +758,126 @@ ShareDbMongo.prototype._query = function(collection, inputQuery, projection, cal
 
   collection.find(query, projection, query.$findOptions).toArray(callback);
 };
+*/
 
-ShareDbMongo.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
+SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
   var self = this;
-  this.getCollection(collectionName, function(err, collection) {
+
+  function cb(err, data) {
+    callback(error(err), data);
+  }
+
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
-    var projection = getProjection(fields);
-    self._query(collection, inputQuery, projection, function(err, results, extra) {
-      if (err) return callback(err);
-      var snapshots = [];
-      for (var i = 0; i < results.length; i++) {
-        var snapshot = castToSnapshot(results[i]);
-        snapshots.push(snapshot);
+
+    var projection = getProjection(fields),
+        q = mongoAql(collectionName, inputQuery);
+
+    // self._query(collection, inputQuery, projection, function(err, results, extra) {
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err && err.errorNum === 1203) {
+        return self.createCollection(collectionName, function() { callback(); });
       }
-      callback(null, snapshots, extra);
+  
+      if (err) return callback(error(err));
+
+      cursor.map(castToProjectedSnapshot(null, projection, true), cb);
     });
   });
 };
 
-ShareDbMongo.prototype.queryPoll = function(collectionName, inputQuery, options, callback) {
+SyncArango.prototype.queryPoll = function(collectionName, inputQuery, fields, options, callback) {
   var self = this;
+
+  this.getDbs(function(err, db, dbPoll) {
+    if (err) return callback(err);
+
+    var projection = { _key: 1 },
+        q = mongoAql(collectionName, inputQuery);
+
+    // self._query(collection, inputQuery, projection, function(err, results, extra) {
+    (dbPoll || db).query(q.query, q.values, function (err, cursor) {
+      if (err && err.errorNum === 1203) {
+        return self.createCollection(collectionName, function() { callback(); });
+      }
+  
+      if (err) return callback(error(err));
+
+      cursor.all(function(err, data) {
+        if (err) return callback(error(err));
+        var ids = [];
+
+        for (var i = 0; i < data.length; i++) {
+          ids.push(data[i]._key);
+        }
+      });
+
+      callback(null, ids);
+    });
+  });
+};
+
+SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options, callback) {
+  var self = this;
+
+  console.log('SyncArango.prototype.queryPollDoc', collectionName, id, query);
+
   this.getCollectionPoll(collectionName, function(err, collection) {
     if (err) return callback(err);
-    var projection = {_id: 1};
-    self._query(collection, inputQuery, projection, function(err, results, extra) {
-      if (err) return callback(err);
-      var ids = [];
-      for (var i = 0; i < results.length; i++) {
-        ids.push(results[i]._id);
+
+    // Run the query against a particular mongo document by adding an _id filter
+    var queryId = query._key;
+    if (queryId && typeof queryId === 'object') {
+      // Check if the query contains the id directly in the common pattern of
+      // a query for a specific list of ids, such as {_id: {$in: [1, 2, 3]}}
+      if (Array.isArray(queryId.$in) && Object.keys(queryId).length === 1) {
+        if (queryId.$in.indexOf(id) === -1) {
+          // If the id isn't in the list of ids, then there is no way this
+          // can be a match
+          return callback();
+        } else {
+          // If the id is in the list, then it is equivalent to restrict to our
+          // particular id and override the current value
+          query._key = id;
+        }
+      } else {
+        delete query._id;
+        delete query._key;
+
+        query.$and = (query.$and) ?
+          query.$and.concat({_key: id}, {_key: queryId}) :
+          [{_key: id}, {_key: queryId}];
       }
-      callback(null, ids, extra);
+    } else if (queryId && queryId !== id) {
+      // If queryId is a primative value such as a string or number and it
+      // isn't equal to the id, then there is no way this can be a match
+      return callback();
+    } else {
+      // Restrict the query to this particular document
+      query._key = id;
+    }
+
+    console.log('queryPollDoc query', query);
+    var q = mongoAql(collectionName, query);
+
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err && err.errorNum === 1203) {
+        return self.createCollection(collectionName, function() { callback(); });
+      }
+      else if (err) {
+        callback(error(err));
+      }
+      else {
+        cursor.all(function(err, data) {
+          callback(error(err), data && data.length > 0);
+        });
+      }
     });
   });
 };
 
-ShareDbMongo.prototype.queryPollDoc = function(collectionName, id, inputQuery, options, callback) {
+/*
+SyncArango.prototype.queryPollDoc = function(collectionName, id, inputQuery, options, callback) {
   var self = this;
   this.getCollectionPoll(collectionName, function(err, collection) {
     if (err) return callback(err);
@@ -697,12 +921,12 @@ ShareDbMongo.prototype.queryPollDoc = function(collectionName, id, inputQuery, o
     });
   });
 };
-
+*/
 
 // **** Polling optimization
 
 // Can we poll by checking the query limited to the particular doc only?
-ShareDbMongo.prototype.canPollDoc = function(collectionName, query) {
+SyncArango.prototype.canPollDoc = function(collectionName, query) {
   return !(
     query.hasOwnProperty('$orderby') ||
     query.hasOwnProperty('$limit') ||
@@ -713,7 +937,7 @@ ShareDbMongo.prototype.canPollDoc = function(collectionName, query) {
 
 // Return true to avoid polling if there is no possibility that an op could
 // affect a query's results
-ShareDbMongo.prototype.skipPoll = function(collectionName, id, op, query) {
+SyncArango.prototype.skipPoll = function(collectionName, id, op, query) {
   // Livedb is in charge of doing the validation of ops, so at this point we
   // should be able to assume that the op is structured validly
   if (op.create || op.del) return false;
@@ -763,7 +987,7 @@ function opContainsAnyField(op, fields) {
 
 // Return error string on error. Query should already be normalized with
 // normalizeQuery below.
-ShareDbMongo.prototype.checkQuery = function(query) {
+SyncArango.prototype.checkQuery = function(query) {
   if (!this.allowJSQueries) {
     if (query.$query.$where != null) {
       return {code: 4103, message: '$where queries disabled'};
@@ -813,7 +1037,7 @@ function castToDoc(id, snapshot, opLink) {
   ) ?
     shallowClone(snapshot.data) :
     {_data: snapshot.data};
-  doc._id = id;
+  doc._key = id;
   doc._type = snapshot.type;
   doc._v = snapshot.v;
   doc._m = snapshot.m;
@@ -821,25 +1045,69 @@ function castToDoc(id, snapshot, opLink) {
   return doc;
 }
 
+function castToProjected(doc, projection) {
+  if (projection && doc) {
+    for (var i in doc) {
+      if (!projection[i]) {
+        delete doc[i];
+      }
+    }
+  }
+
+  return doc;
+}
+
+/*
+** This works in two ways:
+**  1) If called with getFunction as true then a function will be returned that
+**     can be used for furher processing. The use case is for mapping a cursor.
+**  2) if called with doc, projection only then normal casting is done.
+*/
+function castToProjectedSnapshot(doc, projection, getFunction) {
+
+  function cast(doc) {
+    doc = castToSnapshot(doc);
+
+    if (projection && doc && doc.data) {
+      for (var i in doc.data) {
+        if (!projection[i]) {
+          delete doc.data[i];
+        }
+      }
+    }
+
+    return doc;
+  }
+
+  if (getFunction) {
+    return cast;
+  }
+  else {
+    return cast(doc);
+  }
+}
+
 function castToSnapshot(doc) {
-  var id = doc._id;
+  var id = doc._key;
   var version = doc._v;
   var type = doc._type;
   var data = doc._data;
   var meta = doc._m;
   var opLink = doc._o;
   if (doc.hasOwnProperty('_data')) {
-    return new MongoSnapshot(id, version, type, data, meta, opLink);
+    return new ArangoSnapshot(id, version, type, data, meta, opLink);
   }
   var data = shallowClone(doc);
   delete data._id;
+  delete data._key;
   delete data._v;
   delete data._type;
   delete data._m;
   delete data._o;
-  return new MongoSnapshot(id, version, type, data, meta, opLink);
+  return new ArangoSnapshot(id, version, type, data, meta, opLink);
 }
-function MongoSnapshot(id, version, type, data, meta, opLink) {
+
+function ArangoSnapshot(id, version, type, data, meta, opLink) {
   this.id = id;
   this.v = version;
   this.type = type;
@@ -894,3 +1162,13 @@ var cursorOperators = {
   $limit: 'limit'
 , $skip: 'skip'
 };
+
+function error(err) {
+  if (typeof err === 'string') {
+    return err;
+  }
+  else if (err && err.errorNum) {
+    console.trace('arangodb error', err.errorNum + ', ' + err.name + ', ' + err.message);
+    return err.errorNum + ', ' + err.name + ', ' + err.message;
+  }
+}
