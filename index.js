@@ -64,6 +64,8 @@ SyncArango.prototype.projectsSnapshots = true;
 SyncArango.prototype.createCollection = function(collectionName, cb){
   var self = this;
 
+  console.trace('createCollection',collectionName);
+
   this.getDbs(function(err, db) {
     if (err) return cb(err);
     db.collection(collectionName).create(function (err) {
@@ -243,15 +245,12 @@ SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opL
 // **** Snapshot methods
 
 SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback) {
-  console.log('SyncArango.prototype.getSnapshot', collectionName, id, fields);
 
   this.getCollection(collectionName, function(err, collection) {
     if (err) return callback(err);
 
     var projection = getProjection(fields);
     collection.document(id, function(err, doc) {
-      console.log('getSnapshot', error(err));
-      console.log('getSnapshot', doc);
 
       if (err) {
         // 1202 is "document not found"
@@ -278,11 +277,17 @@ SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback
 };
 
 SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, callback) {
-  this.getCollection(collectionName, function(err, collection) {
+  this.getDbs(function(err, db) {
     if (err) return callback(err);
-    var queryObject = { _key: { $in: ids } },
-        q = mongoAql(collectionName, queryObject),
-        projection = getProjection(fields);
+
+    try {
+      var queryObject = { _key: { $in: ids } },
+          q = mongoAql(collectionName, queryObject),
+          projection = getProjection(fields);
+    }
+    catch (err) {
+      return callback(err);
+    }
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
@@ -576,8 +581,13 @@ SyncArango.prototype._getOps = function(collectionName, id, from, callback) {
     // Exclude the `d` field, which is only for use internal to livedb-mongo.
     // Also exclude the `m` field, which can be used to store metadata on ops
     // for tracking purposes
-    var projection = {d: 0, m: 0},
-        q = mongoAql(self.getOplogCollectionName(collectionName), queryObject);
+    try {
+      var projection = {d: 0, m: 0},
+          q = mongoAql(self.getOplogCollectionName(collectionName), queryObject);
+    }
+    catch (err) {
+      return callback(err);
+    }
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err) {
@@ -613,14 +623,21 @@ SyncArango.prototype._getOps = function(collectionName, id, from, callback) {
 };
 
 SyncArango.prototype._getOpsBulk = function(collectionName, conditions, callback) {
+  var self = this;
+
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
-    var queryObject = {
-          $or: conditions,
-          $orderby: {d: 1, v: 1}
-        },
-        q = mongoAql(collectionName, queryObject);
+    try {
+      var queryObject = {
+            $or: conditions,
+            $orderby: {d: 1, v: 1}
+          },
+          q = mongoAql(collectionName, queryObject);
+    }
+    catch (err) {
+      return callback(err);
+    }
 
     // Exclude the `m` field, which can be used to store metadata on ops for
     // tracking purposes
@@ -685,9 +702,14 @@ SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, call
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
-    var queryObject = { _key: { $in: ids } },
-        q = mongoAql(collectionName, queryObject),
-        projection = { _key: 1, _id: 1, _o: 1, _v: 1 };
+    try {
+      var queryObject = { _key: { $in: ids } },
+          q = mongoAql(collectionName, queryObject),
+          projection = { _key: 1, _id: 1, _o: 1, _v: 1 };
+    }
+    catch (err) {
+      return callback(err);
+    }
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
@@ -770,12 +792,18 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
-    var projection = getProjection(fields),
-        q = mongoAql(collectionName, inputQuery);
+    try {
+      var projection = getProjection(fields),
+          q = mongoAql(collectionName, Array.isArray(inputQuery)? { _key: { $in: inputQuery } }: inputQuery);
+    }
+    catch (err) {
+      return callback(err);
+    }
 
     // self._query(collection, inputQuery, projection, function(err, results, extra) {
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
+        // console.log(err);
         return self.createCollection(collectionName, function() { callback(); });
       }
   
@@ -792,8 +820,13 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, fields, op
   this.getDbs(function(err, db, dbPoll) {
     if (err) return callback(err);
 
-    var projection = { _key: 1 },
-        q = mongoAql(collectionName, inputQuery);
+    try {
+      var projection = { _key: 1 },
+          q = mongoAql(collectionName, inputQuery);
+    }
+    catch (err) {
+      return callback(err);
+    }
 
     // self._query(collection, inputQuery, projection, function(err, results, extra) {
     (dbPoll || db).query(q.query, q.values, function (err, cursor) {
@@ -820,9 +853,7 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, fields, op
 SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options, callback) {
   var self = this;
 
-  console.log('SyncArango.prototype.queryPollDoc', collectionName, id, query);
-
-  this.getCollectionPoll(collectionName, function(err, collection) {
+  this.getDbs(function(err, db, dbPoll) {
     if (err) return callback(err);
 
     // Run the query against a particular mongo document by adding an _id filter
@@ -857,10 +888,14 @@ SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options,
       query._key = id;
     }
 
-    console.log('queryPollDoc query', query);
-    var q = mongoAql(collectionName, query);
+    try {
+      var q = mongoAql(collectionName, query);
+    }
+    catch (err) {
+      return callback(err);
+    }
 
-    db.query(q.query, q.values, function (err, cursor) {
+    (dbPoll || db).query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
         return self.createCollection(collectionName, function() { callback(); });
       }
@@ -1002,6 +1037,39 @@ SyncArango.prototype.checkQuery = function(query) {
   }
 };
 
+// graph operations
+
+SyncArango.prototype.graph = function(method, collectionName, vertex, callback) {
+  this.getDbs(function(err, db) {
+    if (err) return callback(err);
+
+    try {
+      var q = mongoAql.graph(method, collectionName, vertex);
+    }
+    catch(err) {
+      console.log('SyncArango.prototype.graph', err);
+      return callback(err);
+    }
+
+    db.query(q.query, q.values, function (err, cursor) {
+      if (err) {
+        callback(error(err));
+      }
+      else {
+        cursor.all(function (err, data) {
+          if (err) {
+            callback(error(err));
+          }
+          else {
+            callback(null, data);
+          }
+        });
+      }
+    });
+  });
+};
+
+
 function normalizeQuery(inputQuery) {
   // Box queries inside of a $query and clone so that we know where to look
   // for selctors and can modify them without affecting the original object
@@ -1066,11 +1134,33 @@ function castToProjected(doc, projection) {
 function castToProjectedSnapshot(doc, projection, getFunction) {
 
   function cast(doc) {
+    // are we checking for "existing" fields or "non-existing" fields
+    // existing means the projection is of form { field1: 1, field2: 1 }
+    // non-existing means the projection is of form { field1: 0, field2: 0 }
+    // note that it should be either - or, it can't be mixed.
+    var checkForExistingFields = false;
+
     doc = castToSnapshot(doc);
 
+    // find out what type of projection we are using
+    if (projection) {
+      for (var i in projection) {
+        if (projection[i]) {
+          checkForExistingFields = true;
+          break;
+        }
+      }
+    }
+
+    // how this works is:
+    // if we are checking for "existing" fields, we will delete everything that isn't in projection
+    // if we are checking for "non-existing" fields, we will delete everyting that is "0" in projection
     if (projection && doc && doc.data) {
       for (var i in doc.data) {
-        if (!projection[i]) {
+        if (checkForExistingFields && !projection[i]) {
+          delete doc.data[i];
+        }
+        else if (!checkForExistingFields && projection[i] === 0) {
           delete doc.data[i];
         }
       }
