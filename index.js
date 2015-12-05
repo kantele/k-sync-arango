@@ -74,8 +74,8 @@ SyncArango.prototype.createCollection = function(collectionName, cb){
         if (err) return cb(error(err));
         cb();
       });
-    });  
-  });  
+    });
+  });
 };
 
 SyncArango.prototype.getCollection = function(collectionName, callback) {
@@ -618,7 +618,7 @@ SyncArango.prototype._getOps = function(collectionName, id, from, callback) {
 
         callback(null, data);
       });
-    });    
+    });
 
   });
 };
@@ -785,6 +785,7 @@ SyncArango.prototype._query = function(collection, inputQuery, projection, callb
 
 SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
   var self = this;
+  inputQuery = normalizeQuery(inputQuery);
 
   function cb(err, data) {
     callback(error(err), data);
@@ -801,13 +802,12 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
       return callback(err);
     }
 
-    // self._query(collection, inputQuery, projection, function(err, results, extra) {
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
         // console.log(err);
         return self.createCollection(collectionName, function() { callback(); });
       }
-  
+
       if (err) return callback(error(err));
 
       cursor.map(castToProjectedSnapshot(null, projection, true), cb);
@@ -815,7 +815,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
   });
 };
 
-SyncArango.prototype.queryPoll = function(collectionName, inputQuery, fields, options, callback) {
+SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, callback) {
   var self = this;
 
   this.getDbs(function(err, db, dbPoll) {
@@ -834,7 +834,7 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, fields, op
       if (err && err.errorNum === 1203) {
         return self.createCollection(collectionName, function() { callback(); });
       }
-  
+
       if (err) return callback(error(err));
 
       cursor.all(function(err, data) {
@@ -844,15 +844,17 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, fields, op
         for (var i = 0; i < data.length; i++) {
           ids.push(data[i]._key);
         }
-      });
 
-      callback(null, ids);
+        callback(null, ids);
+      });
     });
   });
 };
 
 SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options, callback) {
   var self = this;
+
+  query = normalizeQuery(query);
 
   this.getDbs(function(err, db, dbPoll) {
     if (err) return callback(err);
@@ -913,7 +915,7 @@ SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options,
 };
 
 /*
-SyncArango.prototype.queryPollDoc = function(collectionName, id, inputQuery, options, callback) {
+SyncArango.prototype.queryPollDoc = function(collectionName, id, inputQuery, options, callback) { console.log('SyncArango.queryPollDoc');
   var self = this;
   this.getCollectionPoll(collectionName, function(err, collection) {
     if (err) return callback(err);
@@ -1040,15 +1042,14 @@ SyncArango.prototype.checkQuery = function(query) {
 
 // graph operations
 
-SyncArango.prototype.graph = function(method, collectionName, vertex, callback) {
+SyncArango.prototype.graph = function(method, collectionName, vertex, options, callback) {
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
     try {
-      var q = mongoAql.graph(method, collectionName, vertex);
+      var q = mongoAql.graph(method, collectionName, vertex, options);
     }
     catch(err) {
-      console.log('SyncArango.prototype.graph', err);
       return callback(err);
     }
 
@@ -1070,10 +1071,67 @@ SyncArango.prototype.graph = function(method, collectionName, vertex, callback) 
   });
 };
 
+SyncArango.prototype.addEdge = function(graphName, from, to, callback) {
+  var edgeCollectionName;
 
+  this.getDbs(function(err, db) {
+    if (err) return callback(err);
+
+    db.graph(graphName).get(function(err, res) {
+      if (err) {
+        return callback(err);
+      }
+
+      // get the first edge collection - only one edge collection supported
+      if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+        edgeCollectionName = res.edgeDefinitions[0].collection;
+      }
+      else {
+        return callback('Edge definition not found.');
+      }
+
+      var edgeCollection = db.edgeCollection(edgeCollectionName);
+
+      edgeCollection.save({ _from: from, _to: to }, function(err, res) {
+        callback(error(err));
+      });
+    });
+  });
+}
+
+SyncArango.prototype.removeEdge = function(graphName, from, to, callback) {
+  var edgeCollectionName;
+
+  this.getDbs(function(err, db) {
+    if (err) return callback(err);
+
+    db.graph(graphName).get(function(err, res) {
+      if (err) {
+        return callback(err);
+      }
+
+      // get the first edge collection - only one edge collection supported
+      if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+        edgeCollectionName = res.edgeDefinitions[0].collection;
+      }
+      else {
+        return callback('Edge definition not found.');
+      }
+
+      var edgeCollection = db.edgeCollection(edgeCollectionName);
+
+      edgeCollection.removeByExample({ _from: from, _to: to }, function(err, res) {
+        callback(error(err));
+      });
+    });
+  });
+}
+
+/*
 function normalizeQuery(inputQuery) {
   // Box queries inside of a $query and clone so that we know where to look
   // for selctors and can modify them without affecting the original object
+
   var query;
   if (inputQuery.$query) {
     query = shallowClone(inputQuery);
@@ -1095,6 +1153,15 @@ function normalizeQuery(inputQuery) {
   // the last version if they get recreated. Lack of a type indicates that a
   // snapshot is deleted, so don't return any documents with a null type
   if (!query.$query._type) query.$query._type = {$ne: null};
+  return query;
+}
+*/
+
+function normalizeQuery(query) {
+  // Deleted documents are kept around so that we can start their version from
+  // the last version if they get recreated. Lack of a type indicates that a
+  // snapshot is deleted, so don't return any documents with a null type
+  if (!query._type) query._type = { $ne: null };
   return query;
 }
 
