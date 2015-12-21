@@ -64,12 +64,12 @@ SyncArango.prototype.projectsSnapshots = true;
 SyncArango.prototype.createCollection = function(collectionName, cb){
   var self = this;
 
-  console.trace('createCollection',collectionName);
+  console.trace('createCollection', collectionName)
 
   this.getDbs(function(err, db) {
     if (err) return cb(err);
     db.collection(collectionName).create(function (err) {
-      if (err) return cb(error(err));
+      if (err) return cb(error(err, collectionName));
       db.collection(self.getOplogCollectionName(collectionName)).create(function (err) {
         if (err) return cb(error(err));
         cb();
@@ -171,10 +171,12 @@ SyncArango.prototype._connect = function(url, options) {
 // **** Commit methods
 
 SyncArango.prototype.commit = function(collectionName, id, op, snapshot, callback) {
+  console.log('SyncArango.prototype.commit', collectionName, id, op);
   var self = this;
   this._writeOp(collectionName, id, op, snapshot, function(err, result) {
     if (err) return callback(err);
     var opId = result._key;
+
     self._writeSnapshot(collectionName, id, snapshot, opId, function(err, succeeded) {
       if (succeeded) return callback(err, succeeded);
       // Cleanup unsuccessful op if snapshot write failed. This is not
@@ -187,6 +189,7 @@ SyncArango.prototype.commit = function(collectionName, id, op, snapshot, callbac
 };
 
 SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callback) {
+  console.log('SyncArango.prototype._writeOp', collectionName, id, op);
   if (typeof op.v !== 'number') {
     var err = {
       code: 4101,
@@ -194,11 +197,13 @@ SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callb
     };
     return callback(err);
   }
+  console.log('getOpCollection', collectionName);
   this.getOpCollection(collectionName, function(err, opCollection) {
     if (err) return callback(err);
     var doc = shallowClone(op);
     doc.d = id;
     doc.o = snapshot._opLink;
+    console.log('opCollection.save', doc);
     var promise = opCollection.save(doc, function(err, result) {
         if (err) return callback(error(error));
         var succeeded = result && !!result.updated;
@@ -684,11 +689,16 @@ function readOpsBulk(cursor, opsMap, id, ops, callback) {
 }
 
 SyncArango.prototype._getSnapshotOpLink = function(collectionName, id, callback) {
+  var self = this;
+
   this.getCollection(collectionName, function(err, collection) {
     if (err) return callback(err);
     var projection = {_id: 0, _o: 1, _v: 1};
     collection.document(id, function(err, doc) {
-      if (err && err.errorNum === 1203) {
+      if (err && err.errorNum === 1202) {
+        return callback(null, null);
+      }
+      else if (err && err.errorNum === 1203) {
         return self.createCollection(collectionName, function() { callback(); });
       }
 
@@ -791,12 +801,16 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
     callback(error(err), data);
   }
 
+  if (!collectionName) {
+    return callback('collection name empty')
+  }
+
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
     try {
       var projection = getProjection(fields),
-          q = mongoAql(collectionName, Array.isArray(inputQuery)? { _key: { $in: inputQuery } }: inputQuery);
+          q = mongoAql(collectionName, inputQuery);
     }
     catch (err) {
       return callback(err);
@@ -804,19 +818,21 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        // console.log(err);
+        console.log(err);
         return self.createCollection(collectionName, function() { callback(); });
       }
 
       if (err) return callback(error(err));
 
-      cursor.map(castToProjectedSnapshot(null, projection, true), cb);
+      cursor.map(castToProjectedSnapshotFunction(projection), cb);
     });
   });
 };
 
 SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, callback) {
   var self = this;
+
+  inputQuery = normalizeQuery(inputQuery);
 
   this.getDbs(function(err, db, dbPoll) {
     if (err) return callback(err);
@@ -1161,7 +1177,22 @@ function normalizeQuery(query) {
   // Deleted documents are kept around so that we can start their version from
   // the last version if they get recreated. Lack of a type indicates that a
   // snapshot is deleted, so don't return any documents with a null type
-  if (!query._type) query._type = { $ne: null };
+
+  if (Array.isArray(query)) {
+    query = { _key: { $in: query } };
+  }
+  else if (typeof query !== 'object') {
+    throw new Error('sync-arango: query not an array or an object' + query);
+  }
+
+  if (!query._type) {
+    // create a clone of the object which we can then modify
+    // and thus leave the original object intact
+    query = Object.assign({}, query);
+
+    query._type = { $ne: null };
+  }
+
   return query;
 }
 
@@ -1199,9 +1230,10 @@ function castToProjected(doc, projection) {
 **     can be used for furher processing. The use case is for mapping a cursor.
 **  2) if called with doc, projection only then normal casting is done.
 */
-function castToProjectedSnapshot(doc, projection, getFunction) {
 
-  function cast(doc) {
+function castToProjectedSnapshotFunction(projection) {
+
+  return function castToProjectedSnapshot(doc) {
     // are we checking for "existing" fields or "non-existing" fields
     // existing means the projection is of form { field1: 1, field2: 1 }
     // non-existing means the projection is of form { field1: 0, field2: 0 }
@@ -1236,13 +1268,10 @@ function castToProjectedSnapshot(doc, projection, getFunction) {
 
     return doc;
   }
+}
 
-  if (getFunction) {
-    return cast;
-  }
-  else {
-    return cast(doc);
-  }
+function castToProjectedSnapshot(doc, projection) {
+  return castToProjectedSnapshotFunction(projection)(doc);
 }
 
 function castToSnapshot(doc) {
@@ -1321,12 +1350,12 @@ var cursorOperators = {
 , $skip: 'skip'
 };
 
-function error(err) {
+function error(err, param) {
   if (typeof err === 'string') {
     return err;
   }
   else if (err && err.errorNum) {
-    console.trace('arangodb error', err.errorNum + ', ' + err.name + ', ' + err.message);
-    return err.errorNum + ', ' + err.name + ', ' + err.message;
+    console.trace('arangodb error', err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: ''));
+    return err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: '');
   }
 }
