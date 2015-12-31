@@ -171,7 +171,6 @@ SyncArango.prototype._connect = function(url, options) {
 // **** Commit methods
 
 SyncArango.prototype.commit = function(collectionName, id, op, snapshot, callback) {
-  console.log('SyncArango.prototype.commit', collectionName, id, op);
   var self = this;
   this._writeOp(collectionName, id, op, snapshot, function(err, result) {
     if (err) return callback(err);
@@ -189,7 +188,6 @@ SyncArango.prototype.commit = function(collectionName, id, op, snapshot, callbac
 };
 
 SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callback) {
-  console.log('SyncArango.prototype._writeOp', collectionName, id, op);
   if (typeof op.v !== 'number') {
     var err = {
       code: 4101,
@@ -197,13 +195,11 @@ SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callb
     };
     return callback(err);
   }
-  console.log('getOpCollection', collectionName);
   this.getOpCollection(collectionName, function(err, opCollection) {
     if (err) return callback(err);
     var doc = shallowClone(op);
     doc.d = id;
     doc.o = snapshot._opLink;
-    console.log('opCollection.save', doc);
     var promise = opCollection.save(doc, function(err, result) {
         if (err) return callback(error(error));
         var succeeded = result && !!result.updated;
@@ -1058,12 +1054,12 @@ SyncArango.prototype.checkQuery = function(query) {
 
 // graph operations
 
-SyncArango.prototype.graph = function(method, collectionName, vertex, options, callback) {
+SyncArango.prototype.graph = function(method, graphName, collectionName, vertex, options, callback) {
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
     try {
-      var q = mongoAql.graph(method, collectionName, vertex, options);
+      var q = mongoAql.graph(method, graphName, collectionName + '/' + vertex, options);
     }
     catch(err) {
       return callback(err);
@@ -1079,7 +1075,19 @@ SyncArango.prototype.graph = function(method, collectionName, vertex, options, c
             callback(error(err));
           }
           else {
-            callback(null, data);
+            var results = [];
+
+            if (data) {
+              for (var i = 0; i < data.length; i++) {
+                results.push(data[i].substring(data[i].indexOf('/') + 1));
+              }
+            }
+
+            if (options.self) {
+              results.push(vertex);
+            }
+
+            callback(null, results);
           }
         });
       }
