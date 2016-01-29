@@ -64,8 +64,6 @@ SyncArango.prototype.projectsSnapshots = true;
 SyncArango.prototype.createCollection = function(collectionName, cb){
   var self = this;
 
-  console.trace('createCollection', collectionName)
-
   this.getDbs(function(err, db) {
     if (err) return cb(err);
     db.collection(collectionName).create(function (err) {
@@ -202,8 +200,7 @@ SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callb
     doc.o = snapshot._opLink;
     var promise = opCollection.save(doc, function(err, result) {
         if (err) return callback(error(error));
-        var succeeded = result && !!result.updated;
-        callback(null, succeeded);
+        callback(null, result);
       });
   });
 };
@@ -270,7 +267,11 @@ SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback
         callback(error(err));
       }
       else {
-        var snapshot = (doc) ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
+        var snapshot = doc && doc._type ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
+        if (collectionName == 'items') {
+//          console.log('doc', doc._id);
+//          console.log('snapshot', snapshot);
+        }
 
         callback(null, snapshot);
       }
@@ -474,7 +475,9 @@ SyncArango.prototype.getOpsBulk = function(collectionName, fromMap, toMap, callb
 };
 
 function checkOpsFrom(collectionName, id, ops, from) {
+  if (ops.length === 0) return;
   if (ops[0] && ops[0].v === from) return;
+  if (from == null) return;
   return {
     code: 5103,
     message: 'Missing ops from requested version ' + collectionName + '.' + id + ' ' + from
@@ -1329,6 +1332,7 @@ function getProjection(fields) {
   // When there is no projection specified, still exclude returning the metadata
   // that is added to a doc for querying or auditing
   if (!fields) return {_m: 0, _o: 0};
+  if (fields.$submit) return;
   var projection = {};
   for (var key in fields) {
     projection[key] = 1;
