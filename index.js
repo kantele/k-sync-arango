@@ -817,7 +817,6 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        console.log(err);
         return self.createCollection(collectionName, function() { callback(); });
       }
 
