@@ -256,7 +256,8 @@ SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback
         // 1203 is "collection not found"
         // in that case we'll create the collection and return empty array
         if (err.errorNum === 1203) {
-          return self.createCollection(collectionName, function() { callback(null, null); });
+          // create the missing collection and try again
+          return self.createCollection(collectionName, function() { self.getSnapshot(collectionName, id, fields, callback); });
         }
         else if (err.errorNum === 1202) {
           err = doc = null;
@@ -268,10 +269,6 @@ SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback
       }
       else {
         var snapshot = doc && doc._type ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
-        if (collectionName == 'items') {
-//          console.log('doc', doc._id);
-//          console.log('snapshot', snapshot);
-        }
 
         callback(null, snapshot);
       }
@@ -280,6 +277,8 @@ SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback
 };
 
 SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, callback) {
+  var self = this;
+
   this.getDbs(function(err, db) {
     if (err) return callback(err);
 
@@ -294,7 +293,7 @@ SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, cal
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        return self.createCollection(collectionName, function() { callback(); });
+        return self.createCollection(collectionName, function() { self.getSnapshotBulk(collectionName, ids, fields, callback); });
       }
       else if (err) {
         callback(error(err));
@@ -600,7 +599,7 @@ SyncArango.prototype._getOps = function(collectionName, id, from, callback) {
         // 1203 is "collection not found"
         // in that case we'll create the collection and return empty array
         if (err.errorNum === 1203) {
-          return self.createCollection(collectionName, function() { callback(null, []); });
+          return self.createCollection(collectionName, function() { self._getOps(collectionName, id, from, callback); });
         }
         else if (err.errorNum === 1202) {
           return callback(null, []);
@@ -654,7 +653,7 @@ SyncArango.prototype._getOpsBulk = function(collectionName, conditions, callback
         // 1202 is "document not found"
         // in that case we'll create the collection and return empty array
         if (err.errorNum === 1203) {
-          return self.createCollection(collectionName, function() { callback(null, {}); });
+          return self.createCollection(collectionName, function() { self._getOpsBulk(collectionName, conditions, callback); });
         }
       }
 
@@ -698,7 +697,7 @@ SyncArango.prototype._getSnapshotOpLink = function(collectionName, id, callback)
         return callback(null, null);
       }
       else if (err && err.errorNum === 1203) {
-        return self.createCollection(collectionName, function() { callback(); });
+        return self.createCollection(collectionName, function() { self._getSnapshotOpLink(collectionName, id, callback); });
       }
 
       callback(error(err), castToProjected(doc, projection));
@@ -723,7 +722,7 @@ SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, call
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        return self.createCollection(collectionName, function() { callback(null, []); });
+        return self.createCollection(collectionName, function() { self._getSnapshotOpLinkBulk(collectionName, ids, callback); });
       }
       else if (err) {
         callback(error(err));
@@ -817,7 +816,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
     db.query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        return self.createCollection(collectionName, function() { callback(); });
+        return self.createCollection(collectionName, function() { self.query(collectionName, inputQuery, fields, options, callback); });
       }
 
       if (err) return callback(error(err));
@@ -846,7 +845,7 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, c
     // self._query(collection, inputQuery, projection, function(err, results, extra) {
     (dbPoll || db).query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        return self.createCollection(collectionName, function() { callback(); });
+        return self.createCollection(collectionName, function() { self.queryPoll(collectionName, inputQuery, options, callback); });
       }
 
       if (err) return callback(error(err));
@@ -914,7 +913,7 @@ SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options,
 
     (dbPoll || db).query(q.query, q.values, function (err, cursor) {
       if (err && err.errorNum === 1203) {
-        return self.createCollection(collectionName, function() { callback(); });
+        return self.createCollection(collectionName, function() { self.queryPollDoc(collectionName, id, query, options, callback); });
       }
       else if (err) {
         callback(error(err));
