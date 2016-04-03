@@ -793,9 +793,14 @@ SyncArango.prototype._query = function(collection, inputQuery, projection, callb
 
 SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
 	var self = this;
-	inputQuery = normalizeQuery(inputQuery);
+	normalizedInputQuery = normalizeQuery(inputQuery);
 
 	function cb(err, data) {
+		// we want to maintain the order if we are getting an array of items
+		if (Array.isArray(inputQuery)) {
+			sortResultsByIds(data, inputQuery);
+		}
+
 		callback(error(err), data);
 	}
 
@@ -808,7 +813,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
 		try {
 			var projection = getProjection(fields),
-					q = mongoAql(collectionName, inputQuery);
+					q = mongoAql(collectionName, normalizedInputQuery);
 		}
 		catch (err) {
 			return callback(err);
@@ -870,7 +875,7 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, c
 };
 
 function sortResultsByIds(results, ids) {
-	var fn = function(a, b) { return ids.indexOf(a) - ids.indexOf(b) };
+	var fn = function(a, b) { return ids.indexOf(a.id? a.id: a) - ids.indexOf(b.id? b.id: b) };
 	results.sort(fn);
 }
 

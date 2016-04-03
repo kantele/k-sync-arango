@@ -1,21 +1,21 @@
 {
-  "name": "k-livedb-mongo",
-  "version": "0.5.2",
-  "description": "MongoDB database adapter for livedb",
-  "main": "index.js",
-  "dependencies": {
-    "async": "*",
-    "mongodb": "*",
-    "k-sync": "*"
-  },
-  "devDependencies": {
-    "expect.js": "^0.3.1",
-    "mocha": "^2.3.3"
-  },
-  "scripts": {
-    "test": "node_modules/.bin/mocha --reporter spec test.js"
-  },
-  "repository": "git://github.com/kantele/k-livedb-mongo.git",
-  "author": "Joseph Gentle and Nate Smith",
-  "license": "MIT"
+	"name": "k-livedb-arango",
+	"version": "0.5.2",
+	"description": "ArangoDB database adapter for livedb",
+	"main": "index.js",
+	"dependencies": {
+		"async": "*",
+		"mongodb": "*",
+		"k-sync": "*"
+	},
+	"devDependencies": {
+		"expect.js": "^0.3.1",
+		"mocha": "^2.3.3"
+	},
+	"scripts": {
+		"test": "node_modules/.bin/mocha --reporter spec test.js"
+	},
+	"repository": "git://github.com/kantele/k-livedb-mongo.git",
+	"author": "Joseph Gentle and Nate Smith and Ilkka Huotari",
+	"license": "MIT"
 }
