@@ -1,6 +1,6 @@
 {
 	"name": "k-livedb-arango",
-	"version": "0.5.2",
+	"version": "0.5.3",
 	"description": "ArangoDB database adapter for livedb",
 	"main": "index.js",
 	"dependencies": {
