@@ -1,10 +1,11 @@
 {
 	"name": "k-livedb-arango",
-	"version": "0.5.4",
+	"version": "0.5.5",
 	"description": "ArangoDB database adapter for livedb",
 	"main": "index.js",
 	"dependencies": {
 		"async": "*",
+		"arangojs": "*",
 		"mongo-aql": "*",
 		"k-sync": "*"
 	},
