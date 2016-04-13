@@ -224,7 +224,7 @@ SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opL
 				if (err) {
 					// Return non-success instead of duplicate key error, since this is
 					// expected to occur during simultaneous creates on the same id
-					if (err.errorNum === 1210) return callback(null, false);
+					// if (err.errorNum === 1210) return callback(null, false);
 					return callback(error(err));
 				}
 				callback(null, true);
@@ -793,14 +793,9 @@ SyncArango.prototype._query = function(collection, inputQuery, projection, callb
 
 SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
 	var self = this;
-	normalizedInputQuery = normalizeQuery(inputQuery);
+	inputQuery = normalizeQuery(inputQuery);
 
 	function cb(err, data) {
-		// we want to maintain the order if we are getting an array of items
-		if (Array.isArray(inputQuery)) {
-			sortResultsByIds(data, inputQuery);
-		}
-
 		callback(error(err), data);
 	}
 
@@ -813,7 +808,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
 		try {
 			var projection = getProjection(fields),
-					q = mongoAql(collectionName, normalizedInputQuery);
+					q = mongoAql(collectionName, inputQuery);
 		}
 		catch (err) {
 			return callback(err);
@@ -875,7 +870,7 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, c
 };
 
 function sortResultsByIds(results, ids) {
-	var fn = function(a, b) { return ids.indexOf(a.id? a.id: a) - ids.indexOf(b.id? b.id: b) };
+	var fn = function(a, b) { return ids.indexOf(a) - ids.indexOf(b) };
 	results.sort(fn);
 }
 
