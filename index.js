@@ -230,9 +230,9 @@ SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opL
 				callback(null, true);
 			});
 		} else {
-			collection.updateByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
+			collection.replaceByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
 				if (err) return callback(error(error));
-				var succeeded = result && !!result.updated;
+				var succeeded = result && !!result.replaced;
 				callback(null, succeeded);
 			});
 		}
@@ -268,7 +268,7 @@ SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback
 				callback(error(err));
 			}
 			else {
-				var snapshot = doc && doc._type ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
+				var snapshot = doc ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
 
 				callback(null, snapshot);
 			}
@@ -1215,14 +1215,16 @@ function normalizeQuery(query) {
 	return query;
 }
 
+function isObject(value) {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function castToDoc(id, snapshot, opLink) {
-	var doc = (
-		typeof snapshot.data === 'object' &&
-		snapshot.data !== null &&
-		!Array.isArray(snapshot.data)
-	) ?
-		shallowClone(snapshot.data) :
-		{_data: snapshot.data};
+	var data = snapshot.data;
+	var doc =
+		(isObject(data)) ? shallowClone(data) :
+		(data === undefined) ? {} :
+		{_data: data};
 	doc._key = id;
 	doc._type = snapshot.type;
 	doc._v = snapshot.v;
