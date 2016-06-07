@@ -1373,11 +1373,17 @@ var cursorOperators = {
 };
 
 function error(err, param) {
-	if (typeof err === 'string') {
-		return err;
-	}
-	else if (err && err.errorNum) {
-		console.trace('arangodb error', err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: ''));
-		return err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: '');
+	if (err) {
+		if (typeof err === 'string') {
+			return err;
+		}
+		else if (err.errorNum) {
+			console.trace('arangodb error', err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: ''));
+			return err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: '');
+		}
+		else if (err.response && err.response.statusCode) {
+			console.trace('arangodb error', err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: ''));
+			return 'arangodb error', err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: '');
+		}
 	}
 }
