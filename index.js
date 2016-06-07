@@ -139,7 +139,7 @@ SyncArango.prototype._connect = function(url, options) {
 		var urlParsed = require('url').parse(url);
 		if (urlParsed.path && urlParsed.path !== '/') {
 			dbName = urlParsed.path.substring(1);
-			url = urlParsed.protocol + '//' + urlParsed.host;
+			url = urlParsed.protocol + '//' + (urlParsed.auth? urlParsed.auth + '@': '') + urlParsed.host;
 		}
 	}
 
@@ -147,23 +147,9 @@ SyncArango.prototype._connect = function(url, options) {
 		throw new Error('Database not found: ', dbName);
 	}
 
-	// todo: implement this later
-
-	// Create the mongo connection client connections if needed
-	/*
-	if (options.arangoPoll) {
-		this.arango = new arangojs.Database(url);
-		this.arango.useDatabase(dbName)
-
-		self.arango = results.arango;
-		self.arangoPoll = results.arangoPoll;
-		this._flushPendingConnect();
-	}
-	else {*/
-		this.arango = new arangojs.Database(url);
-		this.arango.useDatabase(dbName)
-		this._flushPendingConnect();
-	// }
+	this.arango = new arangojs.Database(url);
+	this.arango.useDatabase(dbName)
+	this._flushPendingConnect();
 };
 
 // **** Commit methods
