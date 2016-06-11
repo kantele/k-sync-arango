@@ -1074,9 +1074,10 @@ SyncArango.prototype.graph = function(method, graphName, collectionName, vertex,
 					else {
 						var results = [];
 
+						// we will return a list of keys
 						if (data) {
 							for (var i = 0; i < data.length; i++) {
-								results.push(data[i].substring(data[i].indexOf('/') + 1));
+								results.push(data[i]._key);
 							}
 						}
 
