@@ -729,59 +729,16 @@ SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, call
 };
 
 
-// **** Query methods
-/*
-SyncArango.prototype._query = function(collection, inputQuery, projection, callback) {
-	var query = normalizeQuery(inputQuery);
-	var err = this.checkQuery(query);
-	if (err) return callback(err);
-
-	if (query.$count) {
-		collection.count(query.$query || {}, function(err, extra) {
-			if (err) return callback(err);
-			callback(null, [], extra);
-		});
-		return;
-	}
-
-	if (query.$distinct) {
-		collection.distinct(query.$field, query.$query || {}, function(err, extra) {
-			if (err) return callback(err);
-			callback(null, [], extra);
-		});
-		return;
-	}
-
-	if (query.$aggregate) {
-		collection.aggregate(query.$aggregate, function(err, extra) {
-			if (err) return callback(err);
-			callback(null, [], extra);
-		});
-		return;
-	}
-
-	if (query.$mapReduce) {
-		var mapReduceOptions = {
-			query: query.$query || {},
-			out: {inline: 1},
-			scope: query.$scope || {}
-		};
-		collection.mapReduce(query.$map, query.$reduce, mapReduceOptions, function(err, extra) {
-			if (err) return callback(err);
-			callback(null, [], extra);
-		});
-		return;
-	}
-
-	collection.find(query, projection, query.$findOptions).toArray(callback);
-};
-*/
-
 SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
 	var self = this;
-	inputQuery = normalizeQuery(inputQuery);
+	var normalizedInputQuery = normalizeQuery(inputQuery);
 
 	function cb(err, data) {
+		// we want to maintain the order if we are getting an array of items
+		if (Array.isArray(inputQuery)) {
+			sortResultsByIds(data, inputQuery);
+		}
+
 		callback(error(err), data);
 	}
 
@@ -794,7 +751,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
 		try {
 			var projection = getProjection(fields),
-					q = mongoAql(collectionName, inputQuery);
+					q = mongoAql(collectionName, normalizedInputQuery);
 		}
 		catch (err) {
 			return callback(err);
@@ -806,7 +763,6 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 			}
 
 			if (err) return callback(error(err));
-
 			cursor.map(castToProjectedSnapshotFunction(projection), cb);
 		});
 	});
@@ -856,7 +812,7 @@ SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, c
 };
 
 function sortResultsByIds(results, ids) {
-	var fn = function(a, b) { return ids.indexOf(a) - ids.indexOf(b) };
+	var fn = function(a, b) { return ids.indexOf(a.id? a.id: a) - ids.indexOf(b.id? b.id: b) };
 	results.sort(fn);
 }
 
