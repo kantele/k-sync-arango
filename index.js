@@ -735,7 +735,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 
 	function cb(err, data) {
 		// we want to maintain the order if we are getting an array of items
-		if (Array.isArray(inputQuery)) {
+		if (!err && Array.isArray(inputQuery)) {
 			sortResultsByIds(data, inputQuery);
 		}
 
@@ -1033,7 +1033,9 @@ SyncArango.prototype.graph = function(method, graphName, collectionName, vertex,
 						// we will return a list of keys
 						if (data) {
 							for (var i = 0; i < data.length; i++) {
-								results.push(data[i]._key);
+								if (data[i]) {
+									results.push(data[i]._key);
+								}
 							}
 						}
 
