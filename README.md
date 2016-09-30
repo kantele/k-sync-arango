@@ -23,11 +23,8 @@ together with snapshots.
 
 ## Usage
 
-`k-sync-arango` uses ArangoDb driver [arangojs](https://github.com/arangodb/arangojs).
-
-
 ```js
-var SyncArango = require('k-livedb-arango')(arangoUrl)
+var SyncArango = require('k-livedb-arango')('http://root:@localhost:8529/test')
 ```
 
 ## Error codes
