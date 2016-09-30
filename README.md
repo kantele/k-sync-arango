@@ -25,7 +25,7 @@ together with snapshots.
 
 ```js
 var SyncArango = require('k-livedb-arango')('http://root:@localhost:8529/test');
-var backend = kclient.createBackend({ db: SyncArango });
+var backend = require('k-client').createBackend({ db: SyncArango });
 ```
 
 ## Error codes
