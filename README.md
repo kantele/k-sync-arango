@@ -24,7 +24,7 @@ together with snapshots.
 ## Usage
 
 ```js
-var SyncArango = require('k-livedb-arango')('http://root:@localhost:8529/test')
+var SyncArango = require('k-livedb-arango')('http://root:@localhost:8529/test');
 var backend = kclient.createBackend({ db: SyncArango });
 ```
 
