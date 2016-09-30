@@ -1,48 +1,40 @@
-# sharedb-mongo
+# k-sync-arango
 
-MongoDB database adapter for [sharedb](https://github.com/share/sharedb). This
+NOTE: this readme needs some work. 
+
+ArangoDB database adapter for [k-sync](https://github.com/kantele/k-sync) (which is a fork of [k-sync](https://github.com/share/k-sync)). This
 driver can be used both as a snapshot store and oplog.
 
 Snapshots are stored where you'd expect (the named collection with _id=id). In
 addition, operations are stored in `ops_COLLECTION`. For example, if you have
 a `users` collection, the operations are stored in `ops_users`.
 
-JSON document snapshots in sharedb-mongo are unwrapped so you can use mongo
+JSON document snapshots in k-sync-arango are unwrapped so you can use arango
 queries directly against JSON documents. (They just have some extra fields in
 the form of `_v` and `_type`). It is safe to query documents directly with the
-MongoDB driver or command line. Any read only mongo features, including find,
-aggregate, and map reduce are safe to perform concurrent with ShareDB.
+ArangoDB driver or command line. Any read only arango features, including find,
+aggregate, and map reduce are safe to perform concurrent with k-sync.
 
-However, you must *always* use ShareDB to edit documents. Never use the
-MongoDB driver or command line to directly modify any documents that ShareDB
-might create or edit. ShareDB must be used to properly persist operations
+However, you must *always* use k-sync to edit documents. Never use the
+ArangoDB driver or command line to directly modify any documents that k-sync
+might create or edit. k-sync must be used to properly persist operations
 together with snapshots.
 
 
 ## Usage
 
-`sharedb-mongo` wraps native [mongodb](https://github.com/mongodb/node-
-mongodb-native), and it supports the same configuration options.
+`k-sync-arango` uses ArangoDb driver [arangojs](https://github.com/arangodb/arangojs).
 
-There are two ways to instantiate a sharedb-mongo wrapper:
 
-1. The simplest way is to invoke the module and pass in your mongo DB
-arguments as arguments to the module function. For example:
-
-var db = require('sharedb-mongo')('localhost:27017/test');
-
-2. If you already have a mongo connection that you want to use, you
-alternatively can pass it into sharedb-mongo:
-
-require('mongodb').connect('localhost:27017/test', function(err, mongo) {
-  if (err) throw err;
-  var db = require('sharedb-mongo')({mongo: mongo});
-});
-
+```js
+var SyncArango = require('k-livedb-arango')(arangoUrl)
+```
 
 ## Error codes
 
-Mongo errors are passed back directly. Additional error codes:
+### todo - check these
+
+arango errors are passed back directly. Additional error codes:
 
 #### 4100 -- Bad request - DB
 
