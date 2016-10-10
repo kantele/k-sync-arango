@@ -879,53 +879,6 @@ SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options,
 	});
 };
 
-/*
-SyncArango.prototype.queryPollDoc = function(collectionName, id, inputQuery, options, callback) { console.log('SyncArango.queryPollDoc');
-	var self = this;
-	this.getCollectionPoll(collectionName, function(err, collection) {
-		if (err) return callback(err);
-
-		var query = normalizeQuery(inputQuery);
-		var err = self.checkQuery(query);
-		if (err) return callback(err);
-
-		// Run the query against a particular mongo document by adding an _id filter
-		var queryId = query.$query._id;
-		if (queryId && typeof queryId === 'object') {
-			// Check if the query contains the id directly in the common pattern of
-			// a query for a specific list of ids, such as {_id: {$in: [1, 2, 3]}}
-			if (Array.isArray(queryId.$in) && Object.keys(queryId).length === 1) {
-				if (queryId.$in.indexOf(id) === -1) {
-					// If the id isn't in the list of ids, then there is no way this
-					// can be a match
-					return callback();
-				} else {
-					// If the id is in the list, then it is equivalent to restrict to our
-					// particular id and override the current value
-					queryId.$query._id = id;
-				}
-			} else {
-				delete query.$query._id;
-				query.$query.$and = (query.$query.$and) ?
-					query.$query.$and.concat({_id: id}, {_id: queryId}) :
-					[{_id: id}, {_id: queryId}];
-			}
-		} else if (queryId && queryId !== id) {
-			// If queryId is a primative value such as a string or number and it
-			// isn't equal to the id, then there is no way this can be a match
-			return callback();
-		} else {
-			// Restrict the query to this particular document
-			query.$query._id = id;
-		}
-
-		collection.findOne(query, {_id: 1}, function(err, doc) {
-			callback(err, !!doc);
-		});
-	});
-};
-*/
-
 // **** Polling optimization
 
 // Can we poll by checking the query limited to the particular doc only?
@@ -1102,6 +1055,36 @@ SyncArango.prototype.removeEdge = function(graphName, from, to, callback) {
 
 			edgeCollection.removeByExample({ _from: from, _to: to }, function(err, res) {
 				callback(error(err));
+			});
+		});
+	});
+}
+
+SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
+	var edgeCollectionName;
+
+	this.getDbs(function(err, db) {
+		if (err) return callback(err);
+
+		db.graph(graphName).get(function(err, res) {
+			if (err) {
+				return callback(err);
+			}
+
+			// get the first edge collection - only one edge collection supported
+			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+				edgeCollectionName = res.edgeDefinitions[0].collection;
+			}
+			else {
+				return callback('Edge definition not found.');
+			}
+
+			var edgeCollection = db.edgeCollection(edgeCollectionName);
+
+			edgeCollection.removeByExample({ _from: vertex }, function(err, res) {
+				edgeCollection.removeByExample({ _to: vertex }, function(err, res) {
+					callback(error(err));
+				});
 			});
 		});
 	});
