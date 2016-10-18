@@ -1,6 +1,6 @@
 {
 	"name": "k-sync-arango",
-	"version": "0.5.15",
+	"version": "0.5.16",
 	"description": "ArangoDB database adapter for livedb",
 	"main": "index.js",
 	"dependencies": {
