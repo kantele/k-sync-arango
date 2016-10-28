@@ -325,6 +325,7 @@ SyncArango.prototype.validateCollectionName = function(collectionName) {
 			collectionName[3] === '_'
 		)
 	) {
+		console.trace();
 		return {code: 4102, message: 'Invalid collection name ' + collectionName};
 	}
 };
@@ -960,12 +961,21 @@ SyncArango.prototype.checkQuery = function(query) {
 
 // graph operations
 
-SyncArango.prototype.graph = function(method, graphName, collectionName, vertex, options, callback) {
+SyncArango.prototype.getEdges = function(graphName, vertex, options, callback) {
+	var vertexId;
+
+	// "vertex" is of format collection/id, this will return the id
+	function idFromVertex(vertex) {
+		var match = vertex.match(/^([^/]+)\/([^/]+)$/);
+
+		return match && match[2];
+	}
+
 	this.getDbs(function(err, db) {
 		if (err) return callback(err);
 
 		try {
-			var q = mongoAql.graph(method, graphName, collectionName + '/' + vertex, options);
+			var q = mongoAql.edges(graphName, vertex, options);
 		}
 		catch(err) {
 			return callback(err);
@@ -992,8 +1002,8 @@ SyncArango.prototype.graph = function(method, graphName, collectionName, vertex,
 							}
 						}
 
-						if (options.self) {
-							results.push(vertex);
+						if (options.self && (vertexId = idFromVertex(vertex))) {
+							results.push(vertexId);
 						}
 
 						callback(null, results);
@@ -1005,7 +1015,8 @@ SyncArango.prototype.graph = function(method, graphName, collectionName, vertex,
 };
 
 SyncArango.prototype.addEdge = function(graphName, from, to, callback) {
-	var edgeCollectionName;
+	var edgeCollectionName,
+		self = this;
 
 	this.getDbs(function(err, db) {
 		if (err) return callback(err);
@@ -1025,8 +1036,28 @@ SyncArango.prototype.addEdge = function(graphName, from, to, callback) {
 
 			var edgeCollection = db.edgeCollection(edgeCollectionName);
 
-			edgeCollection.save({ _from: from, _to: to }, function(err, res) {
-				callback(error(err));
+			// check if there is already an edge
+			// let there be only one edge (to make the connection unique)
+			// we could do this with unique indexes but it would take more memory
+			edgeCollection.byExample({ _from: from, _to: to }, function(err, cursor) {
+				if (err) {
+					callback(error(err));
+				}
+				else {
+					cursor.all(function(err, data) {
+						if (err) {
+							callback(error(err));
+						}
+						else if (data && data.length) {
+							callback();
+						}
+						else {
+							edgeCollection.save({ _from: from, _to: to }, function(err, res) {
+								callback(error(err));
+							});
+						}
+					});
+				}
 			});
 		});
 	});
@@ -1060,6 +1091,9 @@ SyncArango.prototype.removeEdge = function(graphName, from, to, callback) {
 	});
 }
 
+// We are removing a vertex from a document collection - this means
+// that we want to remove all the edges that point to/from an edge collection
+// so that there will be no orphaned edges.
 SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
 	var edgeCollectionName;
 
@@ -1089,36 +1123,6 @@ SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
 		});
 	});
 }
-
-/*
-function normalizeQuery(inputQuery) {
-	// Box queries inside of a $query and clone so that we know where to look
-	// for selctors and can modify them without affecting the original object
-
-	var query;
-	if (inputQuery.$query) {
-		query = shallowClone(inputQuery);
-		query.$query = shallowClone(query.$query);
-	} else {
-		query = {$query: {}};
-		for (var key in inputQuery) {
-			if (metaOperators[key]) {
-				query[key] = inputQuery[key];
-			} else if (cursorOperators[key]) {
-				var findOptions = query.$findOptions || (query.$findOptions = {});
-				findOptions[cursorOperators[key]] = inputQuery[key];
-			} else {
-				query.$query[key] = inputQuery[key];
-			}
-		}
-	}
-	// Deleted documents are kept around so that we can start their version from
-	// the last version if they get recreated. Lack of a type indicates that a
-	// snapshot is deleted, so don't return any documents with a null type
-	if (!query.$query._type) query.$query._type = {$ne: null};
-	return query;
-}
-*/
 
 function normalizeQuery(query) {
 	// Deleted documents are kept around so that we can start their version from
