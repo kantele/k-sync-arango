@@ -961,7 +961,8 @@ SyncArango.prototype.checkQuery = function(query) {
 
 // graph operations
 
-SyncArango.prototype.getEdges = function(graphName, vertex, options, callback) {
+// edge can be null/undefined
+SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callback) {
 	var vertexId;
 
 	// "vertex" is of format collection/id, this will return the id
@@ -975,7 +976,7 @@ SyncArango.prototype.getEdges = function(graphName, vertex, options, callback) {
 		if (err) return callback(err);
 
 		try {
-			var q = mongoAql.edges(graphName, vertex, options);
+			var q = mongoAql.neighbors(graphName, vertex, edge, options);
 		}
 		catch(err) {
 			return callback(err);
@@ -1014,7 +1015,8 @@ SyncArango.prototype.getEdges = function(graphName, vertex, options, callback) {
 	});
 };
 
-SyncArango.prototype.addEdge = function(graphName, from, to, callback) {
+SyncArango.prototype.addEdge = function(graphName, from, to, data, callback) {
+	console.log('addEdge', from, to, data);
 	var edgeCollectionName,
 		self = this;
 
@@ -1039,20 +1041,22 @@ SyncArango.prototype.addEdge = function(graphName, from, to, callback) {
 			// check if there is already an edge
 			// let there be only one edge (to make the connection unique)
 			// we could do this with unique indexes but it would take more memory
-			edgeCollection.byExample({ _from: from, _to: to }, function(err, cursor) {
+			var doc = Object.assign({ _from: from, _to: to }, data);
+
+			edgeCollection.byExample(doc, function(err, cursor) {
 				if (err) {
 					callback(error(err));
 				}
 				else {
-					cursor.all(function(err, data) {
+					cursor.all(function(err, results) {
 						if (err) {
 							callback(error(err));
 						}
-						else if (data && data.length) {
+						else if (results && results.length) {
 							callback();
 						}
 						else {
-							edgeCollection.save({ _from: from, _to: to }, function(err, res) {
+							edgeCollection.save(doc, function(err, res) {
 								callback(error(err));
 							});
 						}
@@ -1063,7 +1067,7 @@ SyncArango.prototype.addEdge = function(graphName, from, to, callback) {
 	});
 }
 
-SyncArango.prototype.removeEdge = function(graphName, from, to, callback) {
+SyncArango.prototype.removeEdge = function(graphName, from, to, data, callback) {
 	var edgeCollectionName;
 
 	this.getDbs(function(err, db) {
@@ -1082,9 +1086,10 @@ SyncArango.prototype.removeEdge = function(graphName, from, to, callback) {
 				return callback('Edge definition not found.');
 			}
 
-			var edgeCollection = db.edgeCollection(edgeCollectionName);
+			var edgeCollection = db.edgeCollection(edgeCollectionName),
+				doc = Object.assign({ _from: from, _to: to }, data);
 
-			edgeCollection.removeByExample({ _from: from, _to: to }, function(err, res) {
+			edgeCollection.removeByExample(doc, function(err, res) {
 				callback(error(err));
 			});
 		});
