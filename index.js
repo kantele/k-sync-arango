@@ -1016,7 +1016,6 @@ SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callb
 };
 
 SyncArango.prototype.addEdge = function(graphName, from, to, data, callback) {
-	console.log('addEdge', from, to, data);
 	var edgeCollectionName,
 		self = this;
 
@@ -1125,6 +1124,33 @@ SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
 					callback(error(err));
 				});
 			});
+		});
+	});
+}
+
+SyncArango.prototype.functionFetch = function(aql, params, callback) {
+	var self = this;
+
+	this.getDbs(function(err, db) {
+		if (err) return callback(err);
+
+		db.query(aql, params, function (err, cursor) {
+			if (err && err.errorNum === 1203) {
+				return self.createCollection(collectionName, function() { self.getSnapshotBulk(collectionName, ids, fields, callback); });
+			}
+			else if (err) {
+				callback(error(err));
+			}
+			else {
+				cursor.all(function(err, data) {
+
+					for (var i = 0; i < data.length; i++) {
+						data[i] = castToSnapshot(data[i]);
+					}
+
+					callback(null, data);
+				});
+			}
 		});
 	});
 }
