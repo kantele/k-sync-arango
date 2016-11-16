@@ -1015,6 +1015,56 @@ SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callb
 	});
 };
 
+// edge can be null/undefined
+SyncArango.prototype.getEdge = function(graphName, from, to, edge, callback) {
+	var vertexId;
+
+	// "vertex" is of format collection/id, this will return the id
+	function idFromVertex(vertex) {
+		var match = vertex.match(/^([^/]+)\/([^/]+)$/);
+
+		return match && match[2];
+	}
+
+	this.getDbs(function(err, db) {
+		if (err) return callback(err);
+
+		try {
+			var q = mongoAql.edge(graphName, from, to, edge);
+		}
+		catch(err) {
+			return callback(err);
+		}
+
+		db.query(q.query, q.values, function (err, cursor) {
+			if (err) {
+				callback(error(err));
+			}
+			else {
+				cursor.all(function (err, data) {
+					if (err) {
+						callback(error(err));
+					}
+					else {
+						var results = [];
+
+						// we will return a list of keys
+						if (data) {
+							for (var i = 0; i < data.length; i++) {
+								if (data[i]) {
+									results.push(data[i]._key);
+								}
+							}
+						}
+
+						callback(null, results);
+					}
+				});
+			}
+		});
+	});
+};
+
 SyncArango.prototype.addEdge = function(graphName, from, to, data, callback) {
 	var edgeCollectionName,
 		self = this;
