@@ -961,8 +961,13 @@ SyncArango.prototype.checkQuery = function(query) {
 
 // graph operations
 
-// edge can be null/undefined
-SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callback) {
+// getNeighbors
+// gets neighbors of a vertex example
+// edgeData can be supplied to filter the neighbors, can be null/undefined to get all the neighbor of a particular vertex
+// Options can hold a direction (outbound/inbound/any)
+// Returns a list of vertex keys
+// 
+SyncArango.prototype.getNeighbors = function(graphName, vertex, edgeData, options, callback) {
 	var vertexId;
 
 	// "vertex" is of format collection/id, this will return the id
@@ -976,7 +981,7 @@ SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callb
 		if (err) return callback(err);
 
 		try {
-			var q = mongoAql.neighbors(graphName, vertex, edge, options);
+			var q = mongoAql.neighbors(graphName, vertex, edgeData, options);
 		}
 		catch(err) {
 			return callback(err);
@@ -992,22 +997,11 @@ SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callb
 						callback(error(err));
 					}
 					else {
-						var results = [];
-
-						// we will return a list of keys
-						if (data) {
-							for (var i = 0; i < data.length; i++) {
-								if (data[i]) {
-									results.push(data[i]._key);
-								}
-							}
-						}
-
 						if (options.self && (vertexId = idFromVertex(vertex))) {
-							results.push(vertexId);
+							data.push({ d: vertexId, v: 1, data: {} });
 						}
 
-						callback(null, results);
+						callback(null, data);
 					}
 				});
 			}
@@ -1016,7 +1010,7 @@ SyncArango.prototype.getEdges = function(graphName, vertex, edge, options, callb
 };
 
 // edge can be null/undefined
-SyncArango.prototype.getEdge = function(graphName, from, to, edge, callback) {
+SyncArango.prototype.getEdge = function(graphName, from, to, edge, options, callback) {
 	var vertexId;
 
 	// "vertex" is of format collection/id, this will return the id
@@ -1030,7 +1024,7 @@ SyncArango.prototype.getEdge = function(graphName, from, to, edge, callback) {
 		if (err) return callback(err);
 
 		try {
-			var q = mongoAql.edge(graphName, from, to, edge);
+			var q = mongoAql.edge(graphName, from, to, edge, options);
 		}
 		catch(err) {
 			return callback(err);
@@ -1046,18 +1040,7 @@ SyncArango.prototype.getEdge = function(graphName, from, to, edge, callback) {
 						callback(error(err));
 					}
 					else {
-						var results = [];
-
-						// we will return a list of keys
-						if (data) {
-							for (var i = 0; i < data.length; i++) {
-								if (data[i]) {
-									results.push(data[i]._key);
-								}
-							}
-						}
-
-						callback(null, results);
+						callback(null, data);
 					}
 				});
 			}
