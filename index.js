@@ -2,6 +2,7 @@ var async = require('async');
 var DB = require('k-sync').DB;
 var mongoAql = require('mongo-aql');
 var arangojs = require('arangojs');
+var debug = require('debug')('arango');
 
 module.exports = SyncArango;
 
@@ -51,6 +52,9 @@ function SyncArango(url, options) {
 		this.arangoPoll = null;
 		this.pendingConnect = [];
 		this._connect(url, options);
+	}
+	else {
+		throw Error('Arango url missing/invalid (' + url + ')');
 	}
 };
 
@@ -211,13 +215,13 @@ SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opL
 					// Return non-success instead of duplicate key error, since this is
 					// expected to occur during simultaneous creates on the same id
 					// if (err.errorNum === 1210) return callback(null, false);
-					return callback(error(err));
+					return callback(error(err, collectionName, id, snapshot));
 				}
 				callback(null, true);
 			});
 		} else {
 			collection.replaceByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
-				if (err) return callback(error(error));
+				if (err) return callback(error(error, collection, id, snapshot));
 				var succeeded = result && !!result.replaced;
 				callback(null, succeeded);
 			});
@@ -287,7 +291,9 @@ SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, cal
 			else {
 				cursor.all(function(err, data) {
 					var snapshotMap = {},
-							uncreated = [];
+						uncreated = [];
+
+					if (err) return callback(error(err), []);
 
 					for (var i = 0; i < data.length; i++) {
 						var snapshot = castToProjectedSnapshot(data[i], projection);
@@ -731,8 +737,8 @@ SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, call
 
 
 SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
-	var self = this;
-	var normalizedInputQuery = normalizeQuery(inputQuery);
+	var self = this, q,
+		normalizedInputQuery = normalizeQuery(inputQuery);
 
 	function cb(err, data) {
 		// we want to maintain the order if we are getting an array of items
@@ -751,8 +757,8 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 		if (err) return callback(err);
 
 		try {
-			var projection = getProjection(fields),
-					q = mongoAql(collectionName, normalizedInputQuery);
+			var projection = getProjection(fields);
+			q = mongoAql(collectionName, normalizedInputQuery);
 		}
 		catch (err) {
 			return callback(err);
@@ -1000,6 +1006,17 @@ SyncArango.prototype.getNeighbors = function(graphName, vertex, edgeData, option
 						if (options.self && (vertexId = idFromVertex(vertex))) {
 							data.push({ d: vertexId, v: 1, data: {} });
 						}
+
+						// delete metadata from "data", we don't need that
+						data.forEach(function(el) {
+							if (el.data) {
+								delete el.data._key;
+								delete el.data._id;
+								delete el.data._from;
+								delete el.data._to;
+								delete el.data._rev;
+							}
+						});
 
 						callback(null, data);
 					}
@@ -1370,14 +1387,25 @@ var cursorOperators = {
 
 function error(err, param) {
 	if (err) {
+		var str = '';
+
 		if (typeof err === 'string') {
-			return err;
+			str = err;
 		}
 		else if (err.errorNum) {
-			return err.errorNum + ', ' + err.name + ', ' + err.message + (param? ', ' + param: '');
+			str = err.errorNum + ', ' + err.name + ', ' + err.message;
 		}
 		else if (err.response && err.response.statusCode) {
-			return 'arangodb error', err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: '');
+			str = 'arangodb error', err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: '');
+		}
+
+		console.log(str);
+
+		if (arguments.length > 1) {
+			console.log('-- params --');
+			for (var i = 1; i < arguments.length; i++) {
+				console.log(arguments[i]);
+			}
 		}
 	}
 }
