@@ -214,8 +214,8 @@ SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opL
 				if (err) {
 					// Return non-success instead of duplicate key error, since this is
 					// expected to occur during simultaneous creates on the same id
-					if (err.errorNum === 1210) return callback(null, false);
-					// return callback(error(err, collectionName, id, snapshot));
+					// if (err.errorNum === 1210) return callback(null, false);
+					return callback(err);
 				}
 				callback(null, true);
 			});
