@@ -2,7 +2,6 @@ var async = require('async');
 var DB = require('k-sync').DB;
 var mongoAql = require('mongo-aql');
 var arangojs = require('arangojs');
-var debug = require('debug')('arango');
 
 module.exports = SyncArango;
 
@@ -52,9 +51,6 @@ function SyncArango(url, options) {
 		this.arangoPoll = null;
 		this.pendingConnect = [];
 		this._connect(url, options);
-	}
-	else {
-		throw Error('Arango url missing/invalid (' + url + ')');
 	}
 };
 
@@ -206,27 +202,7 @@ SyncArango.prototype._deleteOp = function(collectionName, opId, callback) {
 };
 
 SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opLink, callback) {
-	this.getCollection(collectionName, function(err, collection) {
-		if (err) return callback(err);
-		var doc = castToDoc(id, snapshot, opLink);
-		if (doc._v === 1) {
-			collection.save(doc, function(err, result) {
-				if (err) {
-					// Return non-success instead of duplicate key error, since this is
-					// expected to occur during simultaneous creates on the same id
-					if (err.errorNum === 1210) return callback(null, false);
-					// return callback(error(err, collectionName, id, snapshot));
-				}
-				callback(null, true);
-			});
-		} else {
-			collection.replaceByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
-				if (err) return callback(error(error, collection, id, snapshot));
-				var succeeded = result && !!result.replaced;
-				callback(null, succeeded);
-			});
-		}
-	});
+	callback(null, true);
 };
 
 
@@ -291,9 +267,7 @@ SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, cal
 			else {
 				cursor.all(function(err, data) {
 					var snapshotMap = {},
-						uncreated = [];
-
-					if (err) return callback(error(err), []);
+							uncreated = [];
 
 					for (var i = 0; i < data.length; i++) {
 						var snapshot = castToProjectedSnapshot(data[i], projection);
@@ -737,8 +711,8 @@ SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, call
 
 
 SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
-	var self = this, q,
-		normalizedInputQuery = normalizeQuery(inputQuery);
+	var self = this;
+	var normalizedInputQuery = normalizeQuery(inputQuery);
 
 	function cb(err, data) {
 		// we want to maintain the order if we are getting an array of items
@@ -757,8 +731,8 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 		if (err) return callback(err);
 
 		try {
-			var projection = getProjection(fields);
-			q = mongoAql(collectionName, normalizedInputQuery);
+			var projection = getProjection(fields),
+					q = mongoAql(collectionName, normalizedInputQuery);
 		}
 		catch (err) {
 			return callback(err);
@@ -976,173 +950,27 @@ SyncArango.prototype.checkQuery = function(query) {
 SyncArango.prototype.getNeighbors = function(graphName, vertex, edgeData, options, callback) {
 	var vertexId;
 
-	// "vertex" is of format collection/id, this will return the id
-	function idFromVertex(vertex) {
-		var match = vertex.match(/^([^/]+)\/([^/]+)$/);
-
-		return match && match[2];
-	}
-
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		try {
-			var q = mongoAql.neighbors(graphName, vertex, edgeData, options);
-		}
-		catch(err) {
-			return callback(err);
-		}
-
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function (err, data) {
-					if (err) {
-						callback(error(err));
-					}
-					else {
-						if (options.self && (vertexId = idFromVertex(vertex))) {
-							data.push({ d: vertexId, v: 1, data: {} });
-						}
-
-						// delete metadata from "data", we don't need that
-						data.forEach(function(el) {
-							if (el.data) {
-								delete el.data._key;
-								delete el.data._id;
-								delete el.data._from;
-								delete el.data._to;
-								delete el.data._rev;
-							}
-						});
-
-						callback(null, data);
-					}
-				});
-			}
-		});
-	});
+	callback();
 };
 
 // edge can be null/undefined
 SyncArango.prototype.getEdge = function(graphName, from, to, edge, options, callback) {
 	var vertexId;
 
-	// "vertex" is of format collection/id, this will return the id
-	function idFromVertex(vertex) {
-		var match = vertex.match(/^([^/]+)\/([^/]+)$/);
-
-		return match && match[2];
-	}
-
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		try {
-			var q = mongoAql.edge(graphName, from, to, edge, options);
-		}
-		catch(err) {
-			return callback(err);
-		}
-
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function (err, data) {
-					if (err) {
-						callback(error(err));
-					}
-					else {
-						callback(null, data);
-					}
-				});
-			}
-		});
-	});
+	callback();
 };
 
 SyncArango.prototype.addEdge = function(graphName, from, to, data, callback) {
 	var edgeCollectionName,
 		self = this;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
-
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
-
-			var edgeCollection = db.edgeCollection(edgeCollectionName);
-
-			// check if there is already an edge
-			// let there be only one edge (to make the connection unique)
-			// we could do this with unique indexes but it would take more memory
-			var doc = Object.assign({ _from: from, _to: to }, data);
-
-			edgeCollection.byExample(doc, function(err, cursor) {
-				if (err) {
-					callback(error(err));
-				}
-				else {
-					cursor.all(function(err, results) {
-						if (err) {
-							callback(error(err));
-						}
-						else if (results && results.length) {
-							callback();
-						}
-						else {
-							edgeCollection.save(doc, function(err, res) {
-								callback(error(err));
-							});
-						}
-					});
-				}
-			});
-		});
-	});
+	callback();
 }
 
 SyncArango.prototype.removeEdge = function(graphName, from, to, data, callback) {
 	var edgeCollectionName;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
-
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
-
-			var edgeCollection = db.edgeCollection(edgeCollectionName),
-				doc = Object.assign({ _from: from, _to: to }, data);
-
-			edgeCollection.removeByExample(doc, function(err, res) {
-				callback(error(err));
-			});
-		});
-	});
+	callback();
 }
 
 // We are removing a vertex from a document collection - this means
@@ -1151,31 +979,7 @@ SyncArango.prototype.removeEdge = function(graphName, from, to, data, callback) 
 SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
 	var edgeCollectionName;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
-
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
-
-			var edgeCollection = db.edgeCollection(edgeCollectionName);
-
-			edgeCollection.removeByExample({ _from: vertex }, function(err, res) {
-				edgeCollection.removeByExample({ _to: vertex }, function(err, res) {
-					callback(error(err));
-				});
-			});
-		});
-	});
+	callback();
 }
 
 SyncArango.prototype.functionFetch = function(aql, params, callback) {
@@ -1329,6 +1133,7 @@ function castToSnapshot(doc) {
 }
 
 function ArangoSnapshot(id, version, type, data, meta, opLink) {
+	console.log(arguments);
 	this.id = id;
 	this.v = version;
 	this.type = type;
