@@ -189,7 +189,7 @@ SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callb
 		doc.d = id;
 		doc.o = snapshot._opLink;
 		var promise = opCollection.save(doc, function(err, result) {
-				if (err) return callback(error(error));
+				if (err) return callback(error(err));
 				callback(null, result);
 			});
 	});
@@ -199,7 +199,7 @@ SyncArango.prototype._deleteOp = function(collectionName, opId, callback) {
 	this.getOpCollection(collectionName, function(err, opCollection) {
 		if (err) return callback(err);
 		var promise = opCollection.remove(opId, function(err, result) {
-				if (err) return callback(error(error));
+				if (err) return callback(error(err));
 				callback(null);
 			});
 	});
@@ -221,7 +221,7 @@ SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opL
 			});
 		} else {
 			collection.replaceByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
-				if (err) return callback(error(error, collection, id, snapshot));
+				if (err) return callback(error(err, collection, id, snapshot));
 				var succeeded = result && !!result.replaced;
 				callback(null, succeeded);
 			});
@@ -1386,26 +1386,40 @@ var cursorOperators = {
 };
 
 function error(err, param) {
+	var str;
+
 	if (err) {
-		var str = '';
+		str = '[k-sync-arango] ';
 
-		if (typeof err === 'string') {
-			str = err;
-		}
-		else if (err.errorNum) {
-			str = err.errorNum + ', ' + err.name + ', ' + err.message;
-		}
-		else if (err.response && err.response.statusCode) {
-			str = 'arangodb error', err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: '');
-		}
+		if (err) {
 
-		console.log(str);
-
-		if (arguments.length > 1) {
-			console.log('-- params --');
-			for (var i = 1; i < arguments.length; i++) {
-				console.log(arguments[i]);
+			if (typeof err === 'string') {
+				str = str + err;
 			}
+			else if (err.errorNum) {
+				str = str + err.errorNum + ', ' + err.name + ', ' + err.message;
+			}
+			else if (err.response && err.response.statusCode) {
+				str = str + err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: '');
+			}
+			else {
+				str = str + 'error';
+			}
+
+			console.log(str);
+			console.log('err', err);
+			console.trace();
+
+			if (arguments.length > 1) {
+				console.log('-- params --');
+				for (var i = 1; i < arguments.length; i++) {
+					console.log(arguments[i]);
+				}
+			}
+
+			// process.exit();
 		}
 	}
+
+	return str;
 }
