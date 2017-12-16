@@ -295,6 +295,8 @@ SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, cal
 
 					if (err) return callback(error(err), []);
 
+					sortResultsByIds(data, ids);
+
 					for (var i = 0; i < data.length; i++) {
 						var snapshot = castToProjectedSnapshot(data[i], projection);
 						snapshotMap[snapshot.id] = snapshot;
@@ -769,7 +771,7 @@ SyncArango.prototype.query = function(collectionName, inputQuery, fields, option
 				return self.createCollection(collectionName, function() { self.query(collectionName, inputQuery, fields, options, callback); });
 			}
 
-			if (err) return callback(error(err));
+			if (err) return callback(error(err, q));
 			cursor.map(castToProjectedSnapshotFunction(projection), cb);
 		});
 	});
@@ -1173,6 +1175,45 @@ SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
 				edgeCollection.removeByExample({ _to: vertex }, function(err, res) {
 					callback(error(err));
 				});
+			});
+		});
+	});
+}
+
+SyncArango.prototype.setGraphData = function(graphName, from, to, data, callback) {
+	var edgeCollectionName,
+		self = this;
+
+	this.getDbs(function(err, db) {
+		if (err) return callback(err);
+
+		db.graph(graphName).get(function(err, res) {
+			if (err) {
+				return callback(err);
+			}
+
+			// get the first edge collection - only one edge collection supported
+			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+				edgeCollectionName = res.edgeDefinitions[0].collection;
+			}
+			else {
+				return callback('Edge definition not found.');
+			}
+
+			var edgeCollection = db.edgeCollection(edgeCollectionName);
+
+			// check if there is already an edge
+			// let there be only one edge (to make the connection unique)
+			// we could do this with unique indexes but it would take more memory
+			var doc = Object.assign({ _from: from, _to: to });
+
+			edgeCollection.updateByExample(doc, data, function(err, res) {
+				if (err) {
+					callback(error(err));
+				}
+				else {
+					callback();
+				}
 			});
 		});
 	});
