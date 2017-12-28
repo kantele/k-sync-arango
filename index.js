@@ -1058,6 +1058,19 @@ SyncArango.prototype.getEdge = function(graphName, from, to, edge, options, call
 						callback(error(err));
 					}
 					else {
+						// remove metadata (_to etc.) from the data.data properties
+						if (data && data.length) {
+							for (var i = 0; i < data.length; i++) {
+								if (data[i].data) {
+									for (j in data[i].data) {
+										if (j.indexOf('_') === 0) {
+											delete data[i].data[j];
+										}
+									}
+								}
+							}
+						}
+
 						callback(null, data);
 					}
 				});
