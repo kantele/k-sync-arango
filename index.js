@@ -1,4 +1,3 @@
-var async = require('async');
 var DB = require('k-sync').DB;
 var mongoAql = require('mongo-aql');
 var arangojs = require('arangojs');
@@ -12,12 +11,6 @@ function SyncArango(url, options) {
 	}
 
 	if (!options) options = {};
-
-	// pollDelay is a dodgy hack to work around race conditions replicating the
-	// data out to the polling target secondaries. If a separate db is specified
-	// for polling, it defaults to 300ms
-	this.pollDelay = (options.pollDelay != null) ? options.pollDelay :
-		(options.arangoPoll) ? 300 : 0;
 
 	// By default, we create indexes on any ops collection that is used
 	this.disableIndexCreation = options.disableIndexCreation || false;
@@ -48,8 +41,6 @@ function SyncArango(url, options) {
 		// We can only get the mongodb client instance in a callback, so
 		// buffer up any requests received in the meantime
 		this.arango = null;
-		this.arangoPoll = null;
-		this.pendingConnect = [];
 		this._connect(url, options);
 	}
 	else {
@@ -61,85 +52,18 @@ SyncArango.prototype = Object.create(DB.prototype);
 
 SyncArango.prototype.projectsSnapshots = true;
 
-/*
-** We'll be creating collections on the fly, because that's handy.
-*/
-SyncArango.prototype.createCollection = function(collectionName, cb){
-	var self = this;
-
-	this.getDbs(function(err, db) {
-		if (err) return cb(err);
-		db.collection(collectionName).create(function (err) {
-			if (err) return cb(error(err, collectionName));
-			db.collection(self.getOplogCollectionName(collectionName)).create(function (err) {
-				if (err) return cb(error(err));
-				cb();
-			});
-		});
-	});
-};
-
-SyncArango.prototype.getCollection = function(collectionName, callback) {
-	// Check the collection name
-	var err = this.validateCollectionName(collectionName);
-	if (err) return callback(err);
-	// Gotcha: calls back sync if connected or async if not
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-		var collection = db.collection(collectionName);
-		return callback(null, collection);
-	});
-};
-
-SyncArango.prototype._getCollectionPoll = function(collectionName, callback) {
-	// Check the collection name
-	var err = this.validateCollectionName(collectionName);
-	if (err) return callback(err);
-	// Gotcha: calls back sync if connected or async if not
-	this.getDbs(function(err, db, dbPoll) {
-		if (err) return callback(err);
-		var collection = (dbPoll || db).collection(collectionName);
-		return callback(null, collection);
-	});
-};
-
-SyncArango.prototype.getCollectionPoll = function(collectionName, callback) {
-	if (this.pollDelay) {
-		var self = this;
-		setTimeout(function() {
-			self._getCollectionPoll(collectionName, callback);
-		}, this.pollDelay);
-		return;
-	}
-	this._getCollectionPoll(collectionName, callback);
-};
-
-SyncArango.prototype.getDbs = function(callback) {
-	if (this.closed) {
-		var err = {code: 5101, message: 'Already closed'};
-		return callback(err);
-	}
-	// We consider ouself ready to reply if this.arango is defined and don't check
-	// this.arangoPoll, since it is optional and is null by default. Thus, it's
-	// important that these two properties are only set together synchronously
-	if (this.arango) return callback(null, this.arango, this.arangoPoll);
-	this.pendingConnect.push(callback);
-};
-
-SyncArango.prototype._flushPendingConnect = function() {
-	var pendingConnect = this.pendingConnect;
-	this.pendingConnect = null;
-	for (var i = 0; i < pendingConnect.length; i++) {
-		pendingConnect[i](null, this.arango, this.arangoPoll);
-	}
-};
-
 SyncArango.prototype._connect = function(url, options) {
-	var self = this,
-			dbName;
+	var dbName, username, password;
 
 	if (url) {
-		var urlParsed = require('url').parse(url);
+		const urlParsed = require('url').parse(url);
+		const auth = urlParsed.auth.split(':');
+
+		if (auth.length) {
+			username = auth[0];
+			password = auth[1];
+		}
+
 		if (urlParsed.path && urlParsed.path !== '/') {
 			dbName = urlParsed.path.substring(1);
 			url = urlParsed.protocol + '//' + (urlParsed.auth? urlParsed.auth + '@': '') + urlParsed.host;
@@ -150,168 +74,222 @@ SyncArango.prototype._connect = function(url, options) {
 		throw new Error('Database not found: ', dbName);
 	}
 
-	this.arango = new arangojs.Database(url);
-	this.arango.useDatabase(dbName)
-	this._flushPendingConnect();
+	this.arango = new arangojs.Database({ url });
+
+	if (username && username) {
+		this.arango.useBasicAuth(username, password);
+	}
+
+	this.arango.useDatabase(dbName);
 };
+
+/*
+** We'll be creating collections on the fly, because that's handy.
+*/
+SyncArango.prototype._createCollection = async function(collectionName){
+	var db = this.arango;
+
+	try {
+		const collection = db.collection(collectionName);
+		await collection.create();
+
+		const oplogCollection = db.collection(this.getOplogCollectionName(collectionName));
+		await oplogCollection.create();
+	}
+	catch (err) {
+		throw error(err, collectionName);
+	}
+};
+
+SyncArango.prototype._getCollection = function(collectionName) {
+	var db = this.arango;
+
+	var err = this.validateCollectionName(collectionName);
+	if (err) throw err;
+
+	return db.collection(collectionName);
+};
+
+
+// Get and return the op collection from mongo, ensuring it has the op index.
+SyncArango.prototype._getOpCollection = async function(collectionName) {
+	const db = this.arango;
+	const name = this.getOplogCollectionName(collectionName);
+	const collection = db.collection(name);
+
+	// Given the potential problems with creating indexes on the fly, it might
+	// be preferrable to disable automatic creation
+	if (this.disableIndexCreation) {
+		return collection;
+	}
+
+	if (this.opIndexes[collectionName]) {
+		return collection;
+	}
+
+	// WARNING: Creating indexes automatically like this is quite dangerous in
+	// production if we are starting with a lot of data and no indexes
+	// already. If new indexes were added or definition of these indexes were
+	// changed, users upgrading this module could unsuspectingly lock up their
+	// databases. If indexes are created as the first ops are added to a
+	// collection this won't be a problem, but this is a dangerous mechanism.
+	// Perhaps we should only warn instead of creating the indexes, especially
+	// when there is a lot of data in the collection.
+
+	try {
+		const index = await collection.createHashIndex([ 'd', 'v' ]);
+		this.opIndexes[collectionName] = true;
+	}
+	catch (error) {
+		console.warn('Warning: Could not create index for op collection:', error.stack || error);
+	}
+	
+	return collection;
+};
+
 
 // **** Commit methods
 
-SyncArango.prototype.commit = function(collectionName, id, op, snapshot, callback) {
-	var self = this;
-	this._writeOp(collectionName, id, op, snapshot, function(err, result) {
-		if (err) return callback(err);
-		var opId = result._key;
+SyncArango.prototype.commit = async function(collectionName, id, op, snapshot, callback) {
+	try {
+		const result = await this._writeOp(collectionName, id, op, snapshot);
 
-		self._writeSnapshot(collectionName, id, snapshot, opId, function(err, succeeded) {
-			if (succeeded) return callback(err, succeeded);
-			// Cleanup unsuccessful op if snapshot write failed. This is not
-			// neccessary for data correctness, but it gets rid of clutter
-			self._deleteOp(collectionName, opId, function(removeErr) {
-				callback(err || removeErr, succeeded);
-			});
-		});
-	});
+		var opId = result._key;
+		const succeeded = this._writeSnapshot(collectionName, id, snapshot, opId);
+
+		if (succeeded) return callback(null, succeeded);
+
+		// Cleanup unsuccessful op if snapshot write failed. This is not
+		// neccessary for data correctness, but it gets rid of clutter
+		this._deleteOp(collectionName, opId);
+		callback();
+	}
+	catch (err) {
+		callback(err);
+	}
 };
 
-SyncArango.prototype._writeOp = function(collectionName, id, op, snapshot, callback) {
+SyncArango.prototype._writeOp = async function(collectionName, id, op, snapshot) {
 	if (typeof op.v !== 'number') {
-		var err = {
+		const err = {
 			code: 4101,
 			message: 'Invalid op version ' + collectionName + '.' + id + ' ' + op.v
 		};
-		return callback(err);
+
+		throw err;
 	}
-	this.getOpCollection(collectionName, function(err, opCollection) {
-		if (err) return callback(err);
-		var doc = shallowClone(op);
+
+	try {
+		const opCollection = await this._getOpCollection(collectionName);
+		const doc = shallowClone(op);
+
 		doc.d = id;
 		doc.o = snapshot._opLink;
-		var promise = opCollection.save(doc, function(err, result) {
-				if (err) return callback(error(err));
-				callback(null, result);
-			});
-	});
+
+		const result = await opCollection.save(doc);
+
+		return result;
+	}
+	catch (err) {
+		throw error(err);
+	}
 };
 
-SyncArango.prototype._deleteOp = function(collectionName, opId, callback) {
-	this.getOpCollection(collectionName, function(err, opCollection) {
-		if (err) return callback(err);
-		var promise = opCollection.remove(opId, function(err, result) {
-				if (err) return callback(error(err));
-				callback(null);
-			});
-	});
+SyncArango.prototype._deleteOp = async function(collectionName, opId, callback) {
+	const opCollection = await this._getOpCollection(collectionName);
+	const result = await opCollection.remove(opId);
+
+	return result;
 };
 
-SyncArango.prototype._writeSnapshot = function(collectionName, id, snapshot, opLink, callback) {
-	this.getCollection(collectionName, function(err, collection) {
-		if (err) return callback(err);
-		var doc = castToDoc(id, snapshot, opLink);
+SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapshot, opLink) {
+	try {
+		const collection = this._getCollection(collectionName);
+		const doc = castToDoc(id, snapshot, opLink);
+
 		if (doc._v === 1) {
-			collection.save(doc, function(err, result) {
-				if (err) {
-					// Return non-success instead of duplicate key error, since this is
-					// expected to occur during simultaneous creates on the same id
-					// if (err.errorNum === 1210) return callback(null, false);
-					return callback(err);
-				}
-				callback(null, true);
-			});
+			await collection.save(doc)
+
+			return true;
 		} else {
-			collection.replaceByExample({_key: id, _v: doc._v - 1}, doc, function(err, result) {
-				if (err) return callback(error(err, collection, id, snapshot));
-				var succeeded = result && !!result.replaced;
-				callback(null, succeeded);
-			});
+			const result = await collection.replaceByExample({_key: id, _v: doc._v - 1}, doc);
+			const succeeded = result && !!result.replaced;
+
+			return succeeded;
 		}
-	});
+	}
+	catch (err) {
+		throw error(err, collection, id, snapshot);
+	}
 };
 
 
 // **** Snapshot methods
 
-SyncArango.prototype.getSnapshot = function(collectionName, id, fields, callback) {
-	var self = this;
+SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, callback) {
+	try {
+		const collection = this._getCollection(collectionName);
+		const projection = getProjection(fields);
 
-	this.getCollection(collectionName, function(err, collection) {
-		if (err) return callback(err);
+		const doc = await collection.document(id);
+		const snapshot = doc ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
 
-		var projection = getProjection(fields);
-		collection.document(id, function(err, doc) {
+		callback(null, snapshot);
+	}
+	catch (err) {
+		// 1202 is "document not found"
+		// 1203 is "collection not found"
+		// in that case we'll create the collection and return empty array
+		if (err.errorNum === 1203) {
+			// create the missing collection and try again
+			await this._createCollection(collectionName);
+			return this.getSnapshot(collectionName, id, fields, callback);
+		}
+		// we just return 'undefined'
+		else if (err.errorNum === 1202) {
+			const snapshot = new ArangoSnapshot(id, 0, null, null);
+			return callback(null, snapshot);			
+		}
 
-			if (err) {
-				// 1202 is "document not found"
-				// 1203 is "collection not found"
-				// in that case we'll create the collection and return empty array
-				if (err.errorNum === 1203) {
-					// create the missing collection and try again
-					return self.createCollection(collectionName, function() { self.getSnapshot(collectionName, id, fields, callback); });
-				}
-				else if (err.errorNum === 1202) {
-					err = doc = null;
-				}
-			}
-
-			if (err) {
-				callback(error(err));
-			}
-			else {
-				var snapshot = doc ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
-
-				callback(null, snapshot);
-			}
-		});
-	});
+		callback(error(err));
+	}
 };
 
-SyncArango.prototype.getSnapshotBulk = function(collectionName, ids, fields, callback) {
-	var self = this;
+SyncArango.prototype.getSnapshotBulk = async function(collectionName, ids, fields, callback) {
+	const db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const queryObject = { _key: { $in: ids } };
+		const q = mongoAql(collectionName, queryObject);
+		const projection = getProjection(fields);
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
+		const snapshotMap = {};
+		const uncreated = [];
 
-		try {
-			var queryObject = { _key: { $in: ids } },
-					q = mongoAql(collectionName, queryObject),
-					projection = getProjection(fields);
+		sortResultsByIds(data, ids);
+
+		for (var i = 0; i < data.length; i++) {
+			var snapshot = castToProjectedSnapshot(data[i], projection);
+			snapshotMap[snapshot.id] = snapshot;
 		}
-		catch (err) {
-			return callback(err);
+
+		for (var i = 0; i < ids.length; i++) {
+			var id = ids[i];
+			if (snapshotMap[id]) continue;
+			snapshotMap[id] = new ArangoSnapshot(id, 0, null, null);
 		}
 
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self.getSnapshotBulk(collectionName, ids, fields, callback); });
-			}
-			else if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function(err, data) {
-					var snapshotMap = {},
-						uncreated = [];
+		callback(null, snapshotMap);
+	}
+	catch (err) {
+		if (err.errorNum === 1203) {
+			await this._createCollection(collectionName);
+			return this.getSnapshotBulk(collectionName, ids, fields, callback);
+		}
 
-					if (err) return callback(error(err), []);
-
-					sortResultsByIds(data, ids);
-
-					for (var i = 0; i < data.length; i++) {
-						var snapshot = castToProjectedSnapshot(data[i], projection);
-						snapshotMap[snapshot.id] = snapshot;
-					}
-
-					for (var i = 0; i < ids.length; i++) {
-						var id = ids[i];
-						if (snapshotMap[id]) continue;
-						snapshotMap[id] = new ArangoSnapshot(id, 0, null, null);
-					}
-
-					callback(null, snapshotMap);
-				});
-			}
-		});
-	});
+		return callback(error(err), []);
+	}
 };
 
 
@@ -337,96 +315,69 @@ SyncArango.prototype.validateCollectionName = function(collectionName) {
 	}
 };
 
-// Get and return the op collection from mongo, ensuring it has the op index.
-SyncArango.prototype.getOpCollection = function(collectionName, callback) {
-	var self = this;
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-		var name = self.getOplogCollectionName(collectionName);
-		var collection = db.collection(name);
-
-		// Given the potential problems with creating indexes on the fly, it might
-		// be preferrable to disable automatic creation
-		if (self.disableIndexCreation) {
-			return callback(null, collection);
-		}
-
-		if (self.opIndexes[collectionName]) {
-			return callback(null, collection);
-		}
-
-		// WARNING: Creating indexes automatically like this is quite dangerous in
-		// production if we are starting with a lot of data and no indexes
-		// already. If new indexes were added or definition of these indexes were
-		// changed, users upgrading this module could unsuspectingly lock up their
-		// databases. If indexes are created as the first ops are added to a
-		// collection this won't be a problem, but this is a dangerous mechanism.
-		// Perhaps we should only warn instead of creating the indexes, especially
-		// when there is a lot of data in the collection.
-
-		collection.createHashIndex([ 'd', 'v' ], function(error, index) {
-			if (error) console.warn('Warning: Could not create index for op collection:', error.stack || error);
-			self.opIndexes[collectionName] = true;
-			callback(null, collection);
-		});
-	});
-};
-
-SyncArango.prototype.getOpsToSnapshot = function(collectionName, id, from, snapshot, callback) {
+SyncArango.prototype.getOpsToSnapshot = async function(collectionName, id, from, snapshot, callback) {
 	if (snapshot._opLink == null) {
 		var err = getSnapshotOpLinkError(collectionName, id);
 		return callback(err);
 	}
-	this._getOps(collectionName, id, from, function(err, ops) {
-		if (err) return callback(err);
+
+	try {
+		const ops = await this._getOps(collectionName, id, from);
 		var filtered = getLinkedOps(ops, null, snapshot._opLink);
 		var err = checkOpsFrom(collectionName, id, filtered, from);
+
 		if (err) return callback(err);
+
 		callback(null, filtered);
-	});
+	}
+	catch (err) {
+		callback(err);
+	}
 };
 
-SyncArango.prototype.getOps = function(collectionName, id, from, to, callback) {
-	var self = this;
-
-	this._getSnapshotOpLink(collectionName, id, function(err, doc) {
-		if (err) return callback(err);
+SyncArango.prototype.getOps = async function(collectionName, id, from, to, callback) {
+	try {
+		const doc = await this._getSnapshotOpLink(collectionName, id);
 
 		if (doc) {
 			if (isCurrentVersion(doc, from)) {
 				return callback(null, []);
 			}
+
 			var err = doc && checkDocHasOp(collectionName, id, doc);
 			if (err) return callback(err);
 		}
 
-		self._getOps(collectionName, id, from, function(err, ops) {
-			if (err) return callback(err);
-			var filtered = filterOps(ops, doc, to);
-			var err = checkOpsFrom(collectionName, id, filtered, from);
-			if (err) return callback(err);
-			callback(null, filtered);
-		});
-	});
+
+		const ops = await this._getOps(collectionName, id, from);
+		var filtered = filterOps(ops, doc, to);
+		var err = checkOpsFrom(collectionName, id, filtered, from);
+
+		if (err) return callback(err);
+
+		callback(null, filtered);
+	}
+	catch (err) {
+		callback(err);
+	}
 };
 
-SyncArango.prototype.getOpsBulk = function(collectionName, fromMap, toMap, callback) {
-	var self = this,
-			ids = Object.keys(fromMap);
+SyncArango.prototype.getOpsBulk = async function(collectionName, fromMap, toMap, callback) {
+	var ids = Object.keys(fromMap);
 
-	this._getSnapshotOpLinkBulk(collectionName, ids, function(err, docs) {
-		if (err) return callback(err);
-		var docMap = getDocMap(docs);
+	try {
+		const docs = await this._getSnapshotOpLinkBulk(collectionName, ids);
+		const docMap = getDocMap(docs);
 
 		// Add empty array for snapshot versions that are up to date and create
 		// the query conditions for ops that we need to get
-		var conditions = [],
-				opsMap = {};
+		const conditions = [];
+		const opsMap = {};
 
 		for (var i = 0; i < ids.length; i++) {
 			var id = ids[i],
-					doc = docMap[id],
-					from = fromMap[id];
+				doc = docMap[id],
+				from = fromMap[id];
 
 			if (doc) {
 				if (isCurrentVersion(doc, from)) {
@@ -449,28 +400,32 @@ SyncArango.prototype.getOpsBulk = function(collectionName, fromMap, toMap, callb
 		if (!conditions.length) return callback(null, opsMap);
 
 		// Otherwise, get all of the ops that are newer
-		self._getOpsBulk(collectionName, conditions, function(err, opsBulk) {
+		const opsBulk = await this._getOpsBulk(collectionName, conditions);
+
+		for (var i = 0; i < conditions.length; i++) {
+			var id = conditions[i].d;
+			var ops = opsBulk[id];
+			var doc = docMap[id];
+			var from = fromMap[id];
+			var to = toMap && toMap[id];
+			var filtered = filterOps(ops, doc, to);
+			var err = checkOpsFrom(collectionName, id, filtered, from);
 			if (err) return callback(err);
-			for (var i = 0; i < conditions.length; i++) {
-				var id = conditions[i].d;
-				var ops = opsBulk[id];
-				var doc = docMap[id];
-				var from = fromMap[id];
-				var to = toMap && toMap[id];
-				var filtered = filterOps(ops, doc, to);
-				var err = checkOpsFrom(collectionName, id, filtered, from);
-				if (err) return callback(err);
-				opsMap[id] = filtered;
-			}
-			callback(null, opsMap);
-		});
-	});
+			opsMap[id] = filtered;
+		}
+
+		callback(null, opsMap);
+	}
+	catch (err) {
+		callback(err);
+	}
 };
 
 function checkOpsFrom(collectionName, id, ops, from) {
 	if (ops.length === 0) return;
 	if (ops[0] && ops[0].v === from) return;
 	if (from == null) return;
+
 	return {
 		code: 5103,
 		message: 'Missing ops from requested version ' + collectionName + '.' + id + ' ' + from
@@ -495,10 +450,12 @@ function isCurrentVersion(doc, version) {
 
 function getDocMap(docs) {
 	var docMap = {};
+
 	for (var i = 0; i < docs.length; i++) {
 		var doc = docs[i];
 		docMap[doc._key] = doc;
 	}
+
 	return docMap;
 }
 
@@ -538,6 +495,7 @@ function filterOps(ops, doc, to) {
 		if (!deleteOp) return [];
 		return getLinkedOps(ops, to, deleteOp._key);
 	}
+
 	return getLinkedOps(ops, to, doc._o);
 }
 
@@ -564,327 +522,264 @@ function getLinkedOps(ops, to, link) {
 	return linkedOps;
 }
 
-SyncArango.prototype._getOps = function(collectionName, id, from, callback) {
-	var self = this;
+SyncArango.prototype._getOps = async function(collectionName, id, from) {
+	var db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	var queryObject = {
+		d: id,
+		v: {$gte: from},
+		$orderby: {v: 1}
+	};
 
-		var queryObject = {
-			d: id,
-			v: {$gte: from},
-			$orderby: {v: 1}
-		};
+	// Exclude the `d` field, which is only for use internal to livedb-mongo.
+	// Also exclude the `m` field, which can be used to store metadata on ops
+	// for tracking purposes
+	try {
+		const projection = { d: 0, m: 0 };
+		const q = mongoAql(this.getOplogCollectionName(collectionName), queryObject);
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
 
-		// Exclude the `d` field, which is only for use internal to livedb-mongo.
-		// Also exclude the `m` field, which can be used to store metadata on ops
-		// for tracking purposes
-		try {
-			var projection = {d: 0, m: 0},
-					q = mongoAql(self.getOplogCollectionName(collectionName), queryObject);
+		// Strip out d, m in the results
+		for (var i = 0; i < data.length; i++) {
+			delete data[i].d;
+			delete data[i].m;
 		}
-		catch (err) {
-			return callback(err);
+
+		return data;
+	}
+	catch (err) {
+		// 1202 is "document not found"
+		// 1203 is "collection not found"
+		// in that case we'll create the collection and return empty array
+		if (err.errorNum === 1203) {
+			await this._createCollection(collectionName);
+			return await this._getOps(collectionName, id, from);
+		}
+		// if nothing was found, we don't return an error, just empty set
+		else if (err.errorNum === 1202) {
+			return [];
 		}
 
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err) {
-				// 1202 is "document not found"
-				// 1203 is "collection not found"
-				// in that case we'll create the collection and return empty array
-				if (err.errorNum === 1203) {
-					return self.createCollection(collectionName, function() { self._getOps(collectionName, id, from, callback); });
-				}
-				else if (err.errorNum === 1202) {
-					return callback(null, []);
-				}
-			}
-
-			if (err) {
-				return callback(error(err), []);
-			}
-
-			cursor.all(function (err, data) {
-				if (err) return callback(error(err), []);
-
-				// Strip out d, m in the results
-				for (var i = 0; i < data.length; i++) {
-					delete data[i].d;
-					delete data[i].m;
-				}
-
-				callback(null, data);
-			});
-		});
-
-	});
+		throw error(err);
+	}
 };
 
-SyncArango.prototype._getOpsBulk = function(collectionName, conditions, callback) {
-	var self = this;
+SyncArango.prototype._getOpsBulk = async function(collectionName, conditions) {
+	var db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		try {
-			var queryObject = {
-						$or: conditions,
-						$orderby: {d: 1, v: 1}
-					},
-					q = mongoAql(collectionName, queryObject);
-		}
-		catch (err) {
-			return callback(err);
-		}
+	try {
+		var queryObject = {
+				$or: conditions,
+				$orderby: {d: 1, v: 1}
+			},
+			q = mongoAql(collectionName, queryObject);
 
 		// Exclude the `m` field, which can be used to store metadata on ops for
 		// tracking purposes
 		// do this in readOpsBulk
 		var projection = { m: 0 };
+		const cursor = await db.query(q.query, q.values);
+		const opsMap = await readOpsBulk(cursor);
 
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err) {
-				// 1202 is "document not found"
-				// in that case we'll create the collection and return empty array
-				if (err.errorNum === 1203) {
-					return self.createCollection(collectionName, function() { self._getOpsBulk(collectionName, conditions, callback); });
-				}
-			}
+		return opsMap;
+	}
+	catch (err) {
+		// 1202 is "document not found"
+		// in that case we'll create the collection and return empty array
+		if (err.errorNum === 1203) {
+			await this._createCollection(collectionName);
+			return await this._getOpsBulk(collectionName, conditions);
+		}
 
-			if (err) {
-				return callback(error(err));
-			}
-
-			readOpsBulk(cursor, {}, null, null, callback);
-		});
-	});
+		return callback(error(err));
+	};
 };
 
-function readOpsBulk(cursor, opsMap, id, ops, callback) {
-	cursor.next(function(err, op) {
-		if (err) return callback(error(err));
-		if (!op) {
-			if (id) opsMap[id] = ops;
-			return callback(null, opsMap);
-		}
-		if (id !== op.d) {
-			if (id) opsMap[id] = ops;
-			id = op.d;
-			ops = [op];
-		} else {
-			ops.push(op);
-		}
-		delete op.d;
-		delete op.m;
-		readOpsBulk(cursor, opsMap, id, ops, callback);
-	});
+async function readOpsBulk(cursor) {
+	var opsMap = {};
+
+	try {
+		do {
+			const op = await cursor.next();
+
+			if (!op) {
+				return opsMap;
+			}
+
+			opsMap[op.d] = opsMap[op.d] || [];
+			opsMap[op.d].push(op);
+
+			delete op.d;
+			delete op.m;
+
+		} while (op);
+	}
+	catch (err) {
+		throw error(err);
+	}
 }
 
-SyncArango.prototype._getSnapshotOpLink = function(collectionName, id, callback) {
-	var self = this;
+SyncArango.prototype._getSnapshotOpLink = async function(collectionName, id) {
+	var db = this.arango;
 
-	this.getCollection(collectionName, function(err, collection) {
-		if (err) return callback(err);
-		var projection = {_id: 0, _o: 1, _v: 1};
-		collection.document(id, function(err, doc) {
-			if (err && err.errorNum === 1202) {
-				return callback(null, null);
-			}
-			else if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self._getSnapshotOpLink(collectionName, id, callback); });
-			}
+	const collection = this._getCollection(collectionName);
+	const projection = {_id: 0, _o: 1, _v: 1};
 
-			callback(error(err), castToProjected(doc, projection));
-		});
-	});
-};
+	try {
+		const doc = collection.document(id);
 
-SyncArango.prototype._getSnapshotOpLinkBulk = function(collectionName, ids, callback) {
-	var self = this;
-
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
-
-		try {
-			var queryObject = { _key: { $in: ids } },
-					q = mongoAql(collectionName, queryObject),
-					projection = { _key: 1, _id: 1, _o: 1, _v: 1 };
+		return castToProjected(doc, projection);
+	}
+	catch (err) {
+		// not found, we return null
+		if (err.errorNum === 1202) {
+			return null;
 		}
-		catch (err) {
-			return callback(err);
+		// collection not found, we create a collection and try again
+		else if (err.errorNum === 1203) {
+			await this._createCollection(collectionName);
+			const result = await this._getSnapshotOpLink(collectionName, id);
+
+			return result;
 		}
 
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self._getSnapshotOpLinkBulk(collectionName, ids, callback); });
-			}
-			else if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function(err, data) {
-					var res = [];
+		throw error(err);
+	}
+};
 
-					for (var i = 0; i < data.length; i++) {
-						res.push(castToProjected(data[i], projection));
-					}
+SyncArango.prototype._getSnapshotOpLinkBulk = async function(collectionName, ids) {
+	const db = this.arango;
+	const queryObject = { _key: { $in: ids } };
+	const q = mongoAql(collectionName, queryObject);
+	const projection = { _key: 1, _id: 1, _o: 1, _v: 1 };
 
-					callback(null, res);
-				});
-			}
-		});
-	});
+	try {
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
+		const res = [];
+
+		for (var i = 0; i < data.length; i++) {
+			res.push(castToProjected(data[i], projection));
+		}
+
+		return res;
+	}
+	catch (err) {
+		// create collection and try again
+		if (err.errorNum === 1203) {
+			await this._createCollection(collectionName);
+			return await this._getSnapshotOpLinkBulk(collectionName, ids);
+		}
+
+		throw error(err);
+	}
 };
 
 
-SyncArango.prototype.query = function(collectionName, inputQuery, fields, options, callback) {
-	var self = this, q,
+SyncArango.prototype.query = async function(collectionName, inputQuery, fields, options, callback) {
+	var db = this.arango, q,
 		normalizedInputQuery = normalizeQuery(inputQuery);
 
-	function cb(err, data) {
-		// we want to maintain the order if we are getting an array of items
-		if (!err && Array.isArray(inputQuery)) {
-			sortResultsByIds(data, inputQuery);
-		}
-
-		callback(error(err), data);
+	if (!callback) {
+		callback = options;
+		options = fields;
+		fields = null;
 	}
 
 	if (!collectionName) {
 		return callback('collection name empty')
 	}
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const projection = getProjection(fields);
+		const q = mongoAql(collectionName, normalizedInputQuery);
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.map(castToProjectedSnapshotFunction(projection));
 
-		try {
-			var projection = getProjection(fields);
-			q = mongoAql(collectionName, normalizedInputQuery);
+		// we want to maintain the order if we are getting an array of items (for example a pathquery)
+		if (Array.isArray(inputQuery)) {
+			sortResultsByIds(data, inputQuery);
 		}
-		catch (err) {
-			return callback(err);
+
+		callback(null, data);
+	}
+	catch (err) {
+		if (err.errorNum === 1203) {
+			await self._createCollection(collectionName);
+			return self.query(collectionName, inputQuery, fields, options, callback);
 		}
 
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self.query(collectionName, inputQuery, fields, options, callback); });
-			}
-
-			if (err) return callback(error(err, q));
-			cursor.map(castToProjectedSnapshotFunction(projection), cb);
-		});
-	});
+		return callback(error(err, q));
+	}
 };
 
-SyncArango.prototype.queryPoll = function(collectionName, inputQuery, options, callback) {
-	var self = this;
-
-	normalizedInputQuery = normalizeQuery(inputQuery);
-
-	this.getDbs(function(err, db, dbPoll) {
-		if (err) return callback(err);
-
-		try {
-			var projection = { _key: 1 },
-					q = mongoAql(collectionName, normalizedInputQuery);
-		}
-		catch (err) {
-			return callback(err);
-		}
-
-		// self._query(collection, normalizedInputQuery, projection, function(err, results, extra) {
-		(dbPoll || db).query(q.query, q.values, function (err, cursor) {
-			if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self.queryPoll(collectionName, normalizedInputQuery, options, callback); });
-			}
-
-			if (err) return callback(error(err));
-
-			cursor.all(function(err, data) {
-				if (err) return callback(error(err));
-				var ids = [];
-
-				for (var i = 0; i < data.length; i++) {
-					ids.push(data[i]._key);
-				}
-
-				// we want to maintain the order if we are getting an array of items
-				if (Array.isArray(inputQuery)) {
-					sortResultsByIds(ids, inputQuery);
-				}
-
-				callback(null, ids);
-			});
-		});
-	});
-};
+SyncArango.prototype.queryPoll = SyncArango.prototype.query;
 
 function sortResultsByIds(results, ids) {
 	var fn = function(a, b) { return ids.indexOf(a.id? a.id: a) - ids.indexOf(b.id? b.id: b) };
 	results.sort(fn);
 }
 
-SyncArango.prototype.queryPollDoc = function(collectionName, id, query, options, callback) {
-	var self = this;
+SyncArango.prototype.queryPollDoc = async function(collectionName, id, query, options, callback) {
+	var db = this.arango;
 
 	query = normalizeQuery(query);
 
-	this.getDbs(function(err, db, dbPoll) {
-		if (err) return callback(err);
+	// Run the query against a particular mongo document by adding an _id filter
+	var queryId = query._key;
 
-		// Run the query against a particular mongo document by adding an _id filter
-		var queryId = query._key;
-		if (queryId && typeof queryId === 'object') {
-			// Check if the query contains the id directly in the common pattern of
-			// a query for a specific list of ids, such as {_id: {$in: [1, 2, 3]}}
-			if (Array.isArray(queryId.$in) && Object.keys(queryId).length === 1) {
-				if (queryId.$in.indexOf(id) === -1) {
-					// If the id isn't in the list of ids, then there is no way this
-					// can be a match
-					return callback();
-				} else {
-					// If the id is in the list, then it is equivalent to restrict to our
-					// particular id and override the current value
-					query._key = id;
-				}
+	if (queryId && typeof queryId === 'object') {
+		// Check if the query contains the id directly in the common pattern of
+		// a query for a specific list of ids, such as {_id: {$in: [1, 2, 3]}}
+		if (Array.isArray(queryId.$in) && Object.keys(queryId).length === 1) {
+			if (queryId.$in.indexOf(id) === -1) {
+				// If the id isn't in the list of ids, then there is no way this
+				// can be a match
+				return callback();
 			} else {
-				delete query._id;
-				delete query._key;
-
-				query.$and = (query.$and) ?
-					query.$and.concat({_key: id}, {_key: queryId}) :
-					[{_key: id}, {_key: queryId}];
+				// If the id is in the list, then it is equivalent to restrict to our
+				// particular id and override the current value
+				query._key = id;
 			}
-		} else if (queryId && queryId !== id) {
-			// If queryId is a primative value such as a string or number and it
-			// isn't equal to the id, then there is no way this can be a match
-			return callback();
 		} else {
-			// Restrict the query to this particular document
-			query._key = id;
+			delete query._id;
+			delete query._key;
+
+			query.$and = (query.$and) ?
+				query.$and.concat({_key: id}, {_key: queryId}) :
+				[{_key: id}, {_key: queryId}];
+		}
+	} else if (queryId && queryId !== id) {
+		// If queryId is a primative value such as a string or number and it
+		// isn't equal to the id, then there is no way this can be a match
+		return callback();
+	} else {
+		// Restrict the query to this particular document
+		query._key = id;
+	}
+
+	try {
+		var q = mongoAql(collectionName, query);
+	}
+	catch (err) {
+		return callback(err);
+	}
+
+	try {
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
+
+		callback(null, data && data.length > 0);
+	}
+	catch (err) {
+		if (err && err.errorNum === 1203) {
+			await self._createCollection(collectionName);
+			return self.queryPollDoc(collectionName, id, query, options, callback);
 		}
 
-		try {
-			var q = mongoAql(collectionName, query);
-		}
-		catch (err) {
-			return callback(err);
-		}
-
-		(dbPoll || db).query(q.query, q.values, function (err, cursor) {
-			if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self.queryPollDoc(collectionName, id, query, options, callback); });
-			}
-			else if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function(err, data) {
-					callback(error(err), data && data.length > 0);
-				});
-			}
-		});
-	});
+		callback(error(err));
+	}
 };
 
 // **** Polling optimization
@@ -974,62 +869,48 @@ SyncArango.prototype.checkQuery = function(query) {
 // Options can hold a direction (outbound/inbound/any)
 // Returns a list of vertex keys
 // 
-SyncArango.prototype.getNeighbors = function(graphName, vertex, edgeData, options, callback) {
+SyncArango.prototype.getNeighbors = async function(graphName, vertex, edgeData, options, callback) {
 	var vertexId;
+	const db = this.arango;
 
 	// "vertex" is of format collection/id, this will return the id
 	function idFromVertex(vertex) {
-		var match = vertex.match(/^([^/]+)\/([^/]+)$/);
+		const match = vertex.match(/^([^/]+)\/([^/]+)$/);
 
 		return match && match[2];
 	}
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const q = mongoAql.neighbors(graphName, vertex, edgeData, options);
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
 
-		try {
-			var q = mongoAql.neighbors(graphName, vertex, edgeData, options);
+		if (options.self && (vertexId = idFromVertex(vertex))) {
+			data.push({ d: vertexId, v: 1, data: {} });
 		}
-		catch(err) {
-			return callback(err);
-		}
 
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function (err, data) {
-					if (err) {
-						callback(error(err));
-					}
-					else {
-						if (options.self && (vertexId = idFromVertex(vertex))) {
-							data.push({ d: vertexId, v: 1, data: {} });
-						}
-
-						// delete metadata from "data", we don't need that
-						data.forEach(function(el) {
-							if (el.data) {
-								delete el.data._key;
-								delete el.data._id;
-								delete el.data._from;
-								delete el.data._to;
-								delete el.data._rev;
-							}
-						});
-
-						callback(null, data);
-					}
-				});
+		// delete metadata from "data", we don't need that
+		data.forEach(function(el) {
+			if (el.data) {
+				delete el.data._key;
+				delete el.data._id;
+				delete el.data._from;
+				delete el.data._to;
+				delete el.data._rev;
 			}
 		});
-	});
+
+		callback(null, data);
+	}
+	catch(err) {
+		return callback(error(err));
+	}
 };
 
 // edge can be null/undefined
-SyncArango.prototype.getEdge = function(graphName, from, to, edge, options, callback) {
+SyncArango.prototype.getEdge = async function(graphName, from, to, edge, options, callback) {
 	var vertexId;
+	const db = this.arango;
 
 	// "vertex" is of format collection/id, this will return the id
 	function idFromVertex(vertex) {
@@ -1038,224 +919,172 @@ SyncArango.prototype.getEdge = function(graphName, from, to, edge, options, call
 		return match && match[2];
 	}
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const q = mongoAql.edge(graphName, from, to, edge, options);
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
 
-		try {
-			var q = mongoAql.edge(graphName, from, to, edge, options);
-		}
-		catch(err) {
-			return callback(err);
-		}
-
-		db.query(q.query, q.values, function (err, cursor) {
-			if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function (err, data) {
-					if (err) {
-						callback(error(err));
-					}
-					else {
-						// remove metadata (_to etc.) from the data.data properties
-						if (data && data.length) {
-							for (var i = 0; i < data.length; i++) {
-								if (data[i].data) {
-									for (j in data[i].data) {
-										if (j.indexOf('_') === 0) {
-											delete data[i].data[j];
-										}
-									}
-								}
-							}
+		// remove metadata (_to etc.) from the data.data properties
+		if (data && data.length) {
+			for (var i = 0; i < data.length; i++) {
+				if (data[i].data) {
+					for (j in data[i].data) {
+						if (j.indexOf('_') === 0) {
+							delete data[i].data[j];
 						}
-
-						callback(null, data);
 					}
-				});
+				}
 			}
-		});
-	});
+		}
+
+		callback(null, data);
+	}
+
+	catch(err) {
+		return callback(error(err));
+	}
 };
 
-SyncArango.prototype.addEdge = function(graphName, from, to, data, callback) {
-	var edgeCollectionName,
-		self = this;
+SyncArango.prototype.addEdge = async function(graphName, from, to, data, callback) {
+	var edgeCollectionName;
+	const db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const res = await db.graph(graphName).get();
 
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
+		// get the first edge collection - only one edge collection supported
+		if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+			edgeCollectionName = res.edgeDefinitions[0].collection;
+		}
+		else {
+			return callback('Edge definition not found.');
+		}
 
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
+		const edgeCollection = db.edgeCollection(edgeCollectionName);
 
-			var edgeCollection = db.edgeCollection(edgeCollectionName);
+		// check if there is already an edge
+		// let there be only one edge (to make the connection unique)
+		// we could do this with unique indexes but it would take more memory
+		const doc = Object.assign({ _from: from, _to: to }, data);
+		const cursor = await edgeCollection.byExample(doc);
+		const results =	await cursor.all();
 
-			// check if there is already an edge
-			// let there be only one edge (to make the connection unique)
-			// we could do this with unique indexes but it would take more memory
-			var doc = Object.assign({ _from: from, _to: to }, data);
-
-			edgeCollection.byExample(doc, function(err, cursor) {
-				if (err) {
-					callback(error(err));
-				}
-				else {
-					cursor.all(function(err, results) {
-						if (err) {
-							callback(error(err));
-						}
-						else if (results && results.length) {
-							callback();
-						}
-						else {
-							edgeCollection.save(doc, function(err, res) {
-								callback(error(err));
-							});
-						}
-					});
-				}
-			});
-		});
-	});
+		if (results && results.length) {
+			callback();
+		}
+		else {
+			await edgeCollection.save(doc);
+			callback();
+		}
+	}
+	catch (err) {
+		callback(error(err));
+	}
 }
 
-SyncArango.prototype.removeEdge = function(graphName, from, to, data, callback) {
+SyncArango.prototype.removeEdge = async function(graphName, from, to, data, callback) {
 	var edgeCollectionName;
+	const db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const res = await db.graph(graphName).get();
 
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
+		// get the first edge collection - only one edge collection supported
+		if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+			edgeCollectionName = res.edgeDefinitions[0].collection;
+		}
+		else {
+			return callback('Edge definition not found.');
+		}
 
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
+		const edgeCollection = db.edgeCollection(edgeCollectionName);
+		const doc = Object.assign({ _from: from, _to: to }, data);
 
-			var edgeCollection = db.edgeCollection(edgeCollectionName),
-				doc = Object.assign({ _from: from, _to: to }, data);
-
-			edgeCollection.removeByExample(doc, function(err, res) {
-				callback(error(err));
-			});
-		});
-	});
+		await edgeCollection.removeByExample(doc);
+	}
+	catch (err) {
+		callback(error(err));
+	}
 }
 
 // We are removing a vertex from a document collection - this means
 // that we want to remove all the edges that point to/from an edge collection
 // so that there will be no orphaned edges.
-SyncArango.prototype.removeVertex = function(graphName, vertex, callback) {
+SyncArango.prototype.removeVertex = async function(graphName, vertex, callback) {
 	var edgeCollectionName;
+	const db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const res = await db.graph(graphName).get();
 
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
+		// get the first edge collection - only one edge collection supported
+		if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+			edgeCollectionName = res.edgeDefinitions[0].collection;
+		}
+		else {
+			return callback('Edge definition not found.');
+		}
 
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
-
-			var edgeCollection = db.edgeCollection(edgeCollectionName);
-
-			edgeCollection.removeByExample({ _from: vertex }, function(err, res) {
-				edgeCollection.removeByExample({ _to: vertex }, function(err, res) {
-					callback(error(err));
-				});
-			});
-		});
-	});
+		const edgeCollection = db.edgeCollection(edgeCollectionName);
+		await edgeCollection.removeByExample({ _from: vertex });
+		await edgeCollection.removeByExample({ _to: vertex });
+	}
+	catch (err) {
+		callback(error(err));
+	}			
 }
 
-SyncArango.prototype.setGraphData = function(graphName, from, to, data, callback) {
-	var edgeCollectionName,
-		self = this;
+SyncArango.prototype.setGraphData = async function(graphName, from, to, data, callback) {
+	var edgeCollectionName;
+	const db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const res = await db.graph(graphName).get();
 
-		db.graph(graphName).get(function(err, res) {
-			if (err) {
-				return callback(err);
-			}
+		// get the first edge collection - only one edge collection supported
+		if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
+			edgeCollectionName = res.edgeDefinitions[0].collection;
+		}
+		else {
+			return callback('Edge definition not found.');
+		}
 
-			// get the first edge collection - only one edge collection supported
-			if (res && res.edgeDefinitions && res.edgeDefinitions && res.edgeDefinitions.length && res.edgeDefinitions[0] && res.edgeDefinitions[0].collection) {
-				edgeCollectionName = res.edgeDefinitions[0].collection;
-			}
-			else {
-				return callback('Edge definition not found.');
-			}
+		const edgeCollection = db.edgeCollection(edgeCollectionName);
 
-			var edgeCollection = db.edgeCollection(edgeCollectionName);
+		// check if there is already an edge
+		// let there be only one edge (to make the connection unique)
+		// we could do this with unique indexes but it would take more memory
+		const doc = Object.assign({ _from: from, _to: to });
+		await edgeCollection.updateByExample(doc, data);
 
-			// check if there is already an edge
-			// let there be only one edge (to make the connection unique)
-			// we could do this with unique indexes but it would take more memory
-			var doc = Object.assign({ _from: from, _to: to });
-
-			edgeCollection.updateByExample(doc, data, function(err, res) {
-				if (err) {
-					callback(error(err));
-				}
-				else {
-					callback();
-				}
-			});
-		});
-	});
+		callback();
+	}
+	catch (err) {
+		callback(error(err));
+	}			
 }
 
-SyncArango.prototype.functionFetch = function(aql, params, callback) {
-	var self = this;
+SyncArango.prototype.functionFetch = async function(aql, params, callback) {
+	const db = this.arango;
 
-	this.getDbs(function(err, db) {
-		if (err) return callback(err);
+	try {
+		const cursor = await db.query(aql, params);
+		const data = await cursor.all();
 
-		db.query(aql, params, function (err, cursor) {
-			if (err && err.errorNum === 1203) {
-				return self.createCollection(collectionName, function() { self.getSnapshotBulk(collectionName, ids, fields, callback); });
-			}
-			else if (err) {
-				callback(error(err));
-			}
-			else {
-				cursor.all(function(err, data) {
+		for (var i = 0; i < data.length; i++) {
+			data[i] = castToSnapshot(data[i]);
+		}
 
-					for (var i = 0; i < data.length; i++) {
-						data[i] = castToSnapshot(data[i]);
-					}
+		callback(null, data);
+	}
+	catch (err) {
+		if (err.errorNum === 1203) {
+			await this._createCollection(collectionName);
+			return this.functionFetch(aql, params, callback);
+		}
 
-					callback(null, data);
-				});
-			}
-		});
-	});
+		callback(error(err));
+	}
 }
 
 function normalizeQuery(query) {
@@ -1274,7 +1103,6 @@ function normalizeQuery(query) {
 		// create a clone of the object which we can then modify
 		// and thus leave the original object intact
 		query = Object.assign({}, query);
-
 		query._type = { $ne: null };
 	}
 
