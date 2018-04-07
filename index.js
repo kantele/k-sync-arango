@@ -681,12 +681,6 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 	var db = this.arango, q,
 		normalizedInputQuery = normalizeQuery(inputQuery);
 
-	if (!callback) {
-		callback = options;
-		options = fields;
-		fields = null;
-	}
-
 	if (!collectionName) {
 		return callback('collection name empty')
 	}
@@ -714,7 +708,41 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 	}
 };
 
-SyncArango.prototype.queryPoll = SyncArango.prototype.query;
+SyncArango.prototype.queryPoll = async function(collectionName, inputQuery, options, callback) {
+	var db = this.arango, q,
+		normalizedInputQuery = normalizeQuery(inputQuery);
+
+	try {
+		var projection = { _key: 1 },
+			q = mongoAql(collectionName, normalizedInputQuery);
+
+		// self._query(collection, normalizedInputQuery, projection, function(err, results, extra) {
+		const cursor = await db.query(q.query, q.values);
+		const data = await cursor.all();
+
+		var ids = [];
+
+		for (var i = 0; i < data.length; i++) {
+			ids.push(data[i]._key);
+		}
+
+		// we want to maintain the order if we are getting an array of items
+		if (Array.isArray(inputQuery)) {
+			sortResultsByIds(ids, inputQuery);
+		}
+
+		callback(null, ids);
+	}
+	catch (err) {
+		if (err.errorNum === 1203) {
+			await self._createCollection(collectionName);
+			return self.queryPoll(collectionName, inputQuery, options, callback);
+		}
+
+		return callback(err);
+	}
+
+};
 
 function sortResultsByIds(results, ids) {
 	var fn = function(a, b) { return ids.indexOf(a.id? a.id: a) - ids.indexOf(b.id? b.id: b) };
