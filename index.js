@@ -155,13 +155,13 @@ SyncArango.prototype.commit = async function(collectionName, id, op, snapshot, c
 		const result = await this._writeOp(collectionName, id, op, snapshot);
 
 		var opId = result._key;
-		const succeeded = this._writeSnapshot(collectionName, id, snapshot, opId);
+		const succeeded = await this._writeSnapshot(collectionName, id, snapshot, opId);
 
 		if (succeeded) return callback(null, succeeded);
 
 		// Cleanup unsuccessful op if snapshot write failed. This is not
 		// neccessary for data correctness, but it gets rid of clutter
-		this._deleteOp(collectionName, opId);
+		await this._deleteOp(collectionName, opId);
 		callback();
 	}
 	catch (err) {
@@ -243,7 +243,7 @@ SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, ca
 		if (err.errorNum === 1203) {
 			// create the missing collection and try again
 			await this._createCollection(collectionName);
-			return this.getSnapshot(collectionName, id, fields, callback);
+			return await this.getSnapshot(collectionName, id, fields, callback);
 		}
 		// we just return 'undefined'
 		else if (err.errorNum === 1202) {
@@ -285,7 +285,7 @@ SyncArango.prototype.getSnapshotBulk = async function(collectionName, ids, field
 	catch (err) {
 		if (err.errorNum === 1203) {
 			await this._createCollection(collectionName);
-			return this.getSnapshotBulk(collectionName, ids, fields, callback);
+			return await this.getSnapshotBulk(collectionName, ids, fields, callback);
 		}
 
 		return callback(error(err), []);
