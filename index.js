@@ -66,7 +66,7 @@ SyncArango.prototype._connect = function(url, options) {
 
 		if (urlParsed.path && urlParsed.path !== '/') {
 			dbName = urlParsed.path.substring(1);
-			url = urlParsed.protocol + '//' + (urlParsed.auth? urlParsed.auth + '@': '') + urlParsed.host;
+			url = urlParsed.protocol + '//' + urlParsed.host;
 		}
 	}
 
@@ -74,7 +74,13 @@ SyncArango.prototype._connect = function(url, options) {
 		throw new Error('Database not found: ', dbName);
 	}
 
-	this.arango = new arangojs.Database({ url });
+	const config = { url };
+
+	if (options.ca) {
+		config.agentOptions = { ca: require('fs').readFileSync(options.ca) };
+	}
+
+	this.arango = new arangojs.Database(config);
 
 	if (username && username) {
 		this.arango.useBasicAuth(username, password);
