@@ -706,8 +706,8 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 	}
 	catch (err) {
 		if (err.errorNum === 1203) {
-			await self._createCollection(collectionName);
-			return self.query(collectionName, inputQuery, fields, options, callback);
+			await this._createCollection(collectionName);
+			return this.query(collectionName, inputQuery, fields, options, callback);
 		}
 
 		return callback(error(err, q));
@@ -741,8 +741,8 @@ SyncArango.prototype.queryPoll = async function(collectionName, inputQuery, opti
 	}
 	catch (err) {
 		if (err.errorNum === 1203) {
-			await self._createCollection(collectionName);
-			return self.queryPoll(collectionName, inputQuery, options, callback);
+			await this._createCollection(collectionName);
+			return this.queryPoll(collectionName, inputQuery, options, callback);
 		}
 
 		return callback(err);
@@ -808,8 +808,8 @@ SyncArango.prototype.queryPollDoc = async function(collectionName, id, query, op
 	}
 	catch (err) {
 		if (err && err.errorNum === 1203) {
-			await self._createCollection(collectionName);
-			return self.queryPollDoc(collectionName, id, query, options, callback);
+			await this._createCollection(collectionName);
+			return this.queryPollDoc(collectionName, id, query, options, callback);
 		}
 
 		callback(error(err));
