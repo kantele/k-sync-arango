@@ -633,7 +633,7 @@ SyncArango.prototype._getSnapshotOpLink = async function(collectionName, id) {
 	const projection = {_id: 0, _o: 1, _v: 1};
 
 	try {
-		const doc = collection.document(id);
+		const doc = await collection.document(id);
 
 		return castToProjected(doc, projection);
 	}
