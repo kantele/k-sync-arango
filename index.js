@@ -4,10 +4,11 @@ var arangojs = require('arangojs');
 
 module.exports = SyncArango;
 
-function SyncArango(url, options) {
+// url: string | Array<string>
+function SyncArango(urls, options) {
 	// use without new
 	if (!(this instanceof SyncArango)) {
-		return new SyncArango(url, options);
+		return new SyncArango(urls, options);
 	}
 
 	if (!options) options = {};
@@ -25,26 +26,17 @@ function SyncArango(url, options) {
 	// Map from collection name -> true for op collections we've ensureIndex'ed
 	this.opIndexes = {};
 
-	// Allow $while and $mapReduce queries. These queries let you run arbitrary
-	// JS on the server. If users make these queries from the browser, there's
-	// security issues.
-	this.allowJSQueries = options.allowAllQueries || options.allowJSQueries || false;
-
-	// Aggregate queries are less dangerous, but you can use them to access any
-	// data in the mongo database.
-	this.allowAggregateQueries = options.allowAllQueries || options.allowAggregateQueries || false;
-
 	// Track whether the close method has been called
 	this.closed = false;
 
-	if (typeof url === 'string') {
+	if (typeof urls === 'string' || Array.isArray(urls)) {
 		// We can only get the mongodb client instance in a callback, so
 		// buffer up any requests received in the meantime
 		this.arango = null;
-		this._connect(url, options);
+		this._connect(urls, options);
 	}
 	else {
-		throw Error('Arango url missing/invalid (' + url + ')');
+		throw Error('Arango url missing/invalid (' + urls + ')');
 	}
 };
 
@@ -52,10 +44,18 @@ SyncArango.prototype = Object.create(DB.prototype);
 
 SyncArango.prototype.projectsSnapshots = true;
 
-SyncArango.prototype._connect = function(url, options) {
-	var dbName, username, password;
+SyncArango.prototype._connect = function(urls, options) {
+	var dbName, username, password, url;
 
-	if (url) {
+	if (Array.isArray(urls)) {
+		urls = urls.map(parseUrl);
+	}
+	else {
+		urls = parseUrl(urls);
+	}
+
+	// get username, password, dbName
+	function parseUrl(url) {
 		const urlParsed = require('url').parse(url);
 		const auth = urlParsed.auth.split(':');
 
@@ -68,13 +68,15 @@ SyncArango.prototype._connect = function(url, options) {
 			dbName = urlParsed.path.substring(1);
 			url = urlParsed.protocol + '//' + urlParsed.host;
 		}
+
+		return url;
 	}
 
 	if (!dbName) {
 		throw new Error('Database not found: ', dbName);
 	}
 
-	const config = { url };
+	const config = { url: urls };
 
 	if (options.ca) {
 		config.agentOptions = { ca: require('fs').readFileSync(options.ca) };
@@ -876,24 +878,6 @@ function opContainsAnyField(op, fields) {
 }
 
 
-// Utility methods
-
-// Return error string on error. Query should already be normalized with
-// normalizeQuery below.
-SyncArango.prototype.checkQuery = function(query) {
-	if (!this.allowJSQueries) {
-		if (query.$query.$where != null) {
-			return {code: 4103, message: '$where queries disabled'};
-		}
-		if (query.$mapReduce != null) {
-			return {code: 4104, message: '$mapReduce queries disabled'};
-		}
-	}
-
-	if (!this.allowAggregateQueries && query.$aggregate) {
-		return {code: 4105, message: '$aggregate queries disabled'};
-	}
-};
 
 // graph operations
 
