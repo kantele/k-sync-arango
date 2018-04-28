@@ -1019,6 +1019,7 @@ SyncArango.prototype.removeEdge = async function(graphName, from, to, data, call
 		const doc = Object.assign({ _from: from, _to: to }, data);
 
 		await edgeCollection.removeByExample(doc);
+		callback();
 	}
 	catch (err) {
 		callback(error(err));
