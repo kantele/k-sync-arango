@@ -920,8 +920,14 @@ SyncArango.prototype.getNeighbors = async function(graphName, vertex, edgeData, 
 
 		callback(null, data);
 	}
-	catch(err) {
-		return callback(error(err));
+	catch (err) {
+		// not found
+		if (err.errorNum === 1202) {
+			callback(null, []);
+		}
+		else {
+			return callback(error(err));
+		}
 	}
 };
 
@@ -958,8 +964,13 @@ SyncArango.prototype.getEdge = async function(graphName, from, to, edge, options
 		callback(null, data);
 	}
 
-	catch(err) {
-		return callback(error(err));
+	catch (err) {
+		if (err.errorNum === 1202) {
+			callback(null, []);
+		}
+		else {
+			return callback(error(err));
+		}
 	}
 };
 
