@@ -160,11 +160,15 @@ SyncArango.prototype._getOpCollection = async function(collectionName) {
 
 SyncArango.prototype.commit = async function(collectionName, id, op, snapshot, callback) {
 	try {
-		const result = await this._writeOp(collectionName, id, op, snapshot);
+		if (op) {
+			const result = await this._writeOp(collectionName, id, op, snapshot);
+			var opId = result._key;
+		}
+		else {
+			var opId = 1;
+		}
 
-		var opId = result._key;
 		const succeeded = await this._writeSnapshot(collectionName, id, snapshot, opId);
-
 		if (succeeded) return callback(null, succeeded);
 
 		// Cleanup unsuccessful op if snapshot write failed. This is not
