@@ -158,7 +158,7 @@ SyncArango.prototype._getOpCollection = async function(collectionName) {
 
 // **** Commit methods
 
-SyncArango.prototype.commit = async function(collectionName, id, op, snapshot, callback) {
+SyncArango.prototype.commit = async function(collectionName, id, op, snapshot, options, callback) {
 	try {
 		const result = await this._writeOp(collectionName, id, op, snapshot);
 
@@ -234,10 +234,10 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 
 // **** Snapshot methods
 
-SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, callback) {
+SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, options, callback) {
 	try {
 		const collection = this._getCollection(collectionName);
-		const projection = getProjection(fields);
+		const projection = getProjection(fields, options);
 
 		const doc = await collection.document(id);
 		const snapshot = doc ? castToProjectedSnapshot(doc, projection) : new ArangoSnapshot(id, 0, null, null);
@@ -263,13 +263,13 @@ SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, ca
 	}
 };
 
-SyncArango.prototype.getSnapshotBulk = async function(collectionName, ids, fields, callback) {
+SyncArango.prototype.getSnapshotBulk = async function(collectionName, ids, fields, options, callback) {
 	const db = this.arango;
 
 	try {
 		const queryObject = { _key: { $in: ids } };
 		const q = mongoAql(collectionName, queryObject);
-		const projection = getProjection(fields);
+		const projection = getProjection(fields, options);
 		const cursor = await db.query(q.query, q.values);
 		const data = await cursor.all();
 		const snapshotMap = {};
@@ -323,14 +323,14 @@ SyncArango.prototype.validateCollectionName = function(collectionName) {
 	}
 };
 
-SyncArango.prototype.getOpsToSnapshot = async function(collectionName, id, from, snapshot, callback) {
+SyncArango.prototype.getOpsToSnapshot = async function(collectionName, id, from, snapshot, options, callback) {
 	if (snapshot._opLink == null) {
 		var err = getSnapshotOpLinkError(collectionName, id);
 		return callback(err);
 	}
 
 	try {
-		const ops = await this._getOps(collectionName, id, from);
+		const ops = await this._getOps(collectionName, id, from, options);
 		var filtered = getLinkedOps(ops, null, snapshot._opLink);
 		var err = checkOpsFrom(collectionName, id, filtered, from);
 
@@ -343,7 +343,7 @@ SyncArango.prototype.getOpsToSnapshot = async function(collectionName, id, from,
 	}
 };
 
-SyncArango.prototype.getOps = async function(collectionName, id, from, to, callback) {
+SyncArango.prototype.getOps = async function(collectionName, id, from, to, options, callback) {
 	try {
 		const doc = await this._getSnapshotOpLink(collectionName, id);
 
@@ -357,7 +357,7 @@ SyncArango.prototype.getOps = async function(collectionName, id, from, to, callb
 		}
 
 
-		const ops = await this._getOps(collectionName, id, from);
+		const ops = await this._getOps(collectionName, id, from, options);
 		var filtered = filterOps(ops, doc, to);
 		var err = checkOpsFrom(collectionName, id, filtered, from);
 
@@ -370,7 +370,7 @@ SyncArango.prototype.getOps = async function(collectionName, id, from, to, callb
 	}
 };
 
-SyncArango.prototype.getOpsBulk = async function(collectionName, fromMap, toMap, callback) {
+SyncArango.prototype.getOpsBulk = async function(collectionName, fromMap, toMap, options, callback) {
 	var ids = Object.keys(fromMap);
 
 	try {
@@ -408,7 +408,7 @@ SyncArango.prototype.getOpsBulk = async function(collectionName, fromMap, toMap,
 		if (!conditions.length) return callback(null, opsMap);
 
 		// Otherwise, get all of the ops that are newer
-		const opsBulk = await this._getOpsBulk(collectionName, conditions);
+		const opsBulk = await this._getOpsBulk(collectionName, conditions, options);
 
 		for (var i = 0; i < conditions.length; i++) {
 			var id = conditions[i].d;
@@ -530,7 +530,7 @@ function getLinkedOps(ops, to, link) {
 	return linkedOps;
 }
 
-SyncArango.prototype._getOps = async function(collectionName, id, from) {
+SyncArango.prototype._getOps = async function(collectionName, id, from, options) {
 	var db = this.arango;
 
 	var queryObject = {
@@ -543,7 +543,7 @@ SyncArango.prototype._getOps = async function(collectionName, id, from) {
 	// Also exclude the `m` field, which can be used to store metadata on ops
 	// for tracking purposes
 	try {
-		const projection = { d: 0, m: 0 };
+		const projection = (options && options.metadata) ? {d: 0} : {d: 0, m: 0};
 		const q = mongoAql(this.getOplogCollectionName(collectionName), queryObject);
 		const cursor = await db.query(q.query, q.values);
 		const data = await cursor.all();
@@ -562,7 +562,7 @@ SyncArango.prototype._getOps = async function(collectionName, id, from) {
 		// in that case we'll create the collection and return empty array
 		if (err.errorNum === 1203) {
 			await this._createCollection(collectionName);
-			return await this._getOps(collectionName, id, from);
+			return await this._getOps(collectionName, id, from, options);
 		}
 		// if nothing was found, we don't return an error, just empty set
 		else if (err.errorNum === 1202) {
@@ -573,7 +573,7 @@ SyncArango.prototype._getOps = async function(collectionName, id, from) {
 	}
 };
 
-SyncArango.prototype._getOpsBulk = async function(collectionName, conditions) {
+SyncArango.prototype._getOpsBulk = async function(collectionName, conditions, options) {
 	var db = this.arango;
 
 	try {
@@ -586,7 +586,7 @@ SyncArango.prototype._getOpsBulk = async function(collectionName, conditions) {
 		// Exclude the `m` field, which can be used to store metadata on ops for
 		// tracking purposes
 		// do this in readOpsBulk
-		var projection = { m: 0 };
+		var projection = (options && options.metadata) ? null : {m: 0};
 		const cursor = await db.query(q.query, q.values);
 		const opsMap = await readOpsBulk(cursor);
 
@@ -597,7 +597,7 @@ SyncArango.prototype._getOpsBulk = async function(collectionName, conditions) {
 		// in that case we'll create the collection and return empty array
 		if (err.errorNum === 1203) {
 			await this._createCollection(collectionName);
-			return await this._getOpsBulk(collectionName, conditions);
+			return await this._getOpsBulk(collectionName, conditions, options);
 		}
 
 		return callback(error(err));
@@ -694,7 +694,7 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 	}
 
 	try {
-		const projection = getProjection(fields);
+		const projection = getProjection(fields, options);
 		const q = mongoAql(collectionName, normalizedInputQuery);
 		const cursor = await db.query(q.query, q.values);
 		const data = await cursor.map(castToProjectedSnapshotFunction(projection));
@@ -1260,12 +1260,14 @@ function shallowClone(object) {
 // depends on the data being stored at the top level of the document. It will
 // only work properly for json documents--which are the only types for which
 // we really want projections.
-function getProjection(fields) {
+function getProjection(fields, options) {
 	// Do not project when called by ShareDB submit
 	if (fields === 'submit') return;
 	// When there is no projection specified, still exclude returning the metadata
 	// that is added to a doc for querying or auditing
-	if (!fields) return {_m: 0, _o: 0};
+	if (!fields) {
+		return (options && options.metadata) ? {_o: 0} : {_m: 0, _o: 0};
+	}
 	if (fields.$submit) return;
 	var projection = {};
 	for (var key in fields) {
@@ -1273,6 +1275,7 @@ function getProjection(fields) {
 	}
 	projection._type = 1;
 	projection._v = 1;
+	if (options && options.metadata) projection._m = 1;
 	return projection;
 }
 
