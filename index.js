@@ -234,7 +234,8 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 	}
 	catch (err) {
 		console.error('Error (_writeSnapshot) ', err);
-		throw error(err, collection, id, snapshot);
+		console.error('Error (_writeSnapshot) ', {collectionName, id, snapshot});
+		throw error(err, collectionName, id, snapshot);
 	}
 };
 
