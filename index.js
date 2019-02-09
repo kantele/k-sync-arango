@@ -213,6 +213,12 @@ SyncArango.prototype._deleteOp = async function(collectionName, opId, callback) 
 SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapshot, opLink) {
 	try {
 		const collection = this._getCollection(collectionName);
+
+		if (!collection) {
+			console.error('Collection not found (_writeSnapshot)', collectionName);
+			return false;
+		}
+
 		const doc = castToDoc(id, snapshot, opLink);
 
 		if (doc._v === 1) {
@@ -227,6 +233,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		}
 	}
 	catch (err) {
+		console.error('Error (_writeSnapshot) ', err);
 		throw error(err, collection, id, snapshot);
 	}
 };
