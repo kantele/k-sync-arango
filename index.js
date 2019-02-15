@@ -233,8 +233,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		}
 	}
 	catch (err) {
-		console.error('Error (_writeSnapshot) ', err);
-		console.error('Error (_writeSnapshot) ', {collectionName, id, snapshot});
+		// console.error('Error (_writeSnapshot) ', {collectionName, id, snapshot});
 		throw error(err, collectionName, id, snapshot);
 	}
 };
@@ -1308,40 +1307,18 @@ var cursorOperators = {
 };
 
 function error(err, param) {
-	var str;
+	if (err)
+	{
+		console.log('[k-sync-arango]', err.toString());
+		console.trace();
 
-	if (err) {
-		str = '[k-sync-arango] ';
-
-		if (err) {
-
-			if (typeof err === 'string') {
-				str = str + err;
+		if (arguments.length > 1) {
+			console.log('[k-sync-arango] params:');
+			for (var i = 1; i < arguments.length; i++) {
+				console.log(i+':', arguments[i]);
 			}
-			else if (err.errorNum) {
-				str = str + err.errorNum + ', ' + err.name + ', ' + err.message;
-			}
-			else if (err.response && err.response.statusCode) {
-				str = str + err.response.statusCode + ', ' + err.response.statusMessage + (param? ', ' + param: '');
-			}
-			else {
-				str = str + 'error';
-			}
-
-			console.log(str);
-			console.log('err', err);
-			console.trace();
-
-			if (arguments.length > 1) {
-				console.log('-- params --');
-				for (var i = 1; i < arguments.length; i++) {
-					console.log(arguments[i]);
-				}
-			}
-
-			// process.exit();
 		}
-	}
 
-	return str;
+		return err.toString();
+	}
 }
