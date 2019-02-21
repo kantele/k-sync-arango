@@ -266,7 +266,7 @@ SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, op
 			return callback(null, snapshot);			
 		}
 
-		callback(error(err));
+		callback(error(err, collectionName, id));
 	}
 };
 
