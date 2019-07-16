@@ -177,7 +177,7 @@ SyncArango.prototype.commit = async function(collectionName, id, op, snapshot, o
 	}
 };
 
-SyncArango.prototype._writeOp = async function(collectionName, id, op, snapshot) {
+SyncArango.prototype._writeOp = async function(collectionName, id, op, snapshot, retry) {
 	if (typeof op.v !== 'number') {
 		const err = {
 			code: 4101,
@@ -199,7 +199,28 @@ SyncArango.prototype._writeOp = async function(collectionName, id, op, snapshot)
 		return result;
 	}
 	catch (err) {
-		throw error(err);
+		// ArangoError: AQL: conflict (while executing)
+		// Try 100 times if this error happens
+		// https://github.com/arangodb/arangodb/issues/2903 
+		// rocksdb racing condition (to write)
+		if (err.errorNum == 1200 && (!retry || retry < 100)) {
+			if (retry) {
+				retry++;
+			}
+			else {
+				retry = 1;
+			}
+			
+			console.log('retry _writeSnapshot', collectionName, id, retry);
+			this._writeOp(collectionName, id, snapshot, opLink, retry)
+		}
+		else  {
+			throw error(err, collectionName, id, snapshot);
+			// throw err.toString();
+			// console.trace();
+			// console.log(err.toString());
+			// console.log(err);
+		}		
 	}
 };
 
@@ -210,7 +231,7 @@ SyncArango.prototype._deleteOp = async function(collectionName, opId, callback) 
 	return result;
 };
 
-SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapshot, opLink) {
+SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapshot, opLink, retry) {
 	try {
 		const collection = this._getCollection(collectionName);
 
@@ -233,8 +254,28 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		}
 	}
 	catch (err) {
-		// console.error('Error (_writeSnapshot) ', {collectionName, id, snapshot});
-		throw error(err, collectionName, id, snapshot);
+		// ArangoError: AQL: conflict (while executing)
+		// Try 100 times if this error happens
+		// https://github.com/arangodb/arangodb/issues/2903 
+		// rocksdb racing condition (to write)
+		if (err.errorNum == 1200 && (!retry || retry < 100)) {
+			if (retry) {
+				retry++;
+			}
+			else {
+				retry = 1;
+			}
+
+			console.log('retry _writeSnapshot', collectionName, id, retry);
+			this._writeSnapshot(collectionName, id, snapshot, opLink, retry)
+		}
+		else  {
+			throw error(err, collectionName, id, snapshot);
+			// throw err.toString();
+			// console.trace();
+			// console.log(err.toString());
+			// console.log(err);
+		}
 	}
 };
 
