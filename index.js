@@ -299,7 +299,7 @@ SyncArango.prototype.getSnapshot = async function(collectionName, id, fields, op
 		if (err.errorNum === 1203) {
 			// create the missing collection and try again
 			await this._createCollection(collectionName);
-			return await this.getSnapshot(collectionName, id, fields, callback);
+			return await this.getSnapshot(collectionName, id, fields, options, callback);
 		}
 		// we just return 'undefined'
 		else if (err.errorNum === 1202) {
