@@ -1,6 +1,7 @@
 var DB = require('k-sync').DB;
 var mongoAql = require('mongo-aql');
 var arangojs = require('arangojs');
+var uuid = require('uuid');
 
 module.exports = SyncArango;
 
@@ -1150,7 +1151,8 @@ SyncArango.prototype.functionFetch = async function(aql, params, callback) {
 		const data = await cursor.all();
 
 		for (var i = 0; i < data.length; i++) {
-			data[i] = castToSnapshot(data[i]);
+			data[i] = castFunctionFetchDataToSnapshot(data[i]);
+
 		}
 
 		callback(null, data);
@@ -1265,6 +1267,26 @@ function castToProjectedSnapshotFunction(projection) {
 
 function castToProjectedSnapshot(doc, projection) {
 	return castToProjectedSnapshotFunction(projection)(doc);
+}
+
+function castFunctionFetchDataToSnapshot(doc) {
+	var id = doc._key || uuid.v4();
+	var version = doc._v || 1;
+	var type = doc._type || "http://sharejs.org/types/JSONv0";
+	var data = doc._data;
+	var meta = doc._m;
+	var opLink = doc._o;
+	if (doc.hasOwnProperty('_data')) {
+		return new ArangoSnapshot(id, version, type, data, meta, opLink);
+	}
+	var data = shallowClone(doc);
+	delete data._id;
+	delete data._key;
+	delete data._v;
+	delete data._type;
+	delete data._m;
+	delete data._o;
+	return new ArangoSnapshot(id, version, type, data, meta, opLink);
 }
 
 function castToSnapshot(doc) {

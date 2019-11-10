@@ -1,13 +1,14 @@
 {
 	"name": "k-sync-arango",
-	"version": "0.7.16",
+	"version": "0.7.17",
 	"description": "ArangoDB database adapter for livedb",
 	"main": "index.js",
 	"dependencies": {
 		"async": "*",
 		"arangojs": "*",
 		"mongo-aql": "*",
-		"k-sync": "*"
+		"k-sync": "*",
+		"uuid": "*"
 	},
 	"devDependencies": {
 		"expect.js": "^0.3.1",
