@@ -30,7 +30,10 @@ function SyncArango(urls, options) {
 	// Track whether the close method has been called
 	this.closed = false;
 
-	if (typeof urls === 'string' || Array.isArray(urls)) {
+	if (options.arango) {
+		this.arango = options.arango;
+	}
+	else if (typeof urls === 'string' || Array.isArray(urls)) {
 		// We can only get the mongodb client instance in a callback, so
 		// buffer up any requests received in the meantime
 		this.arango = null;
