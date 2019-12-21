@@ -1161,12 +1161,7 @@ SyncArango.prototype.functionFetch = async function(aql, params, callback) {
 		callback(null, data);
 	}
 	catch (err) {
-		if (err.errorNum === 1203) {
-			await this._createCollection(collectionName);
-			return this.functionFetch(aql, params, callback);
-		}
-
-		callback(error(err));
+		callback(error(err, aql));
 	}
 }
 
