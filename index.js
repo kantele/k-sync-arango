@@ -207,6 +207,9 @@ SyncArango.prototype._writeOp = async function(collectionName, id, op, snapshot,
 		// Try 100 times if this error happens
 		// https://github.com/arangodb/arangodb/issues/2903 
 		// rocksdb racing condition (to write)
+		console.log(err.toString());
+		console.log({retry});
+
 		if (err.errorNum == 1200 && (!retry || retry < 100)) {
 			if (retry) {
 				retry++;
@@ -215,7 +218,7 @@ SyncArango.prototype._writeOp = async function(collectionName, id, op, snapshot,
 				retry = 1;
 			}
 			
-			console.log('retry _writeSnapshot', collectionName, id, retry);
+			console.log('retry _writeOp', collectionName, id, retry);
 			this._writeOp(collectionName, id, snapshot, opLink, retry)
 		}
 		else  {
@@ -249,10 +252,18 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		if (doc._v === 1) {
 			await collection.save(doc)
 
+			if (retry) {
+				console.log('retry succeeded', { collectionName, id, retry });
+			}
+
 			return true;
 		} else {
 			const result = await collection.replaceByExample({_key: id, _v: doc._v - 1}, doc);
 			const succeeded = result && !!result.replaced;
+
+			if (retry) {
+				console.log('retry succeeded', { collectionName, id, retry });
+			}
 
 			return succeeded;
 		}
@@ -262,6 +273,10 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		// Try 100 times if this error happens
 		// https://github.com/arangodb/arangodb/issues/2903 
 		// rocksdb racing condition (to write)
+		console.log('');
+		console.log(err.toString());
+		console.log({retry});
+
 		if (err.errorNum == 1200 && (!retry || retry < 100)) {
 			if (retry) {
 				retry++;
@@ -470,9 +485,13 @@ SyncArango.prototype.getOpsBulk = async function(collectionName, fromMap, toMap,
 			var to = toMap && toMap[id];
 			var filtered = filterOps(ops, doc, to);
 			var err = checkOpsFrom(collectionName, id, filtered, from);
-			if (err) return callback(err);
+			if (err) {
+				console.error(err);
+				return callback(err);
+			}
 			opsMap[id] = filtered;
 		}
+
 
 		callback(null, opsMap);
 	}
@@ -553,7 +572,7 @@ function filterOps(ops, doc, to) {
 		// written but not the snapshot. Note that this will simply return no ops
 		// if there are ops but the snapshot doesn't exist.
 		if (!deleteOp) return [];
-		return getLinkedOps(ops, to, deleteOp._key);
+		return getLinkedOps(ops, to, deleteOp.d);
 	}
 
 	return getLinkedOps(ops, to, doc._o);
@@ -629,11 +648,13 @@ SyncArango.prototype._getOpsBulk = async function(collectionName, conditions, op
 	var db = this.arango;
 
 	try {
+		const opsCollectionName = this.getOplogCollectionName(collectionName);
+
 		var queryObject = {
 				$or: conditions,
 				$orderby: {d: 1, v: 1}
 			},
-			q = mongoAql(collectionName, queryObject);
+			q = mongoAql(opsCollectionName, queryObject);
 
 		// Exclude the `m` field, which can be used to store metadata on ops for
 		// tracking purposes
@@ -652,28 +673,29 @@ SyncArango.prototype._getOpsBulk = async function(collectionName, conditions, op
 			return await this._getOpsBulk(collectionName, conditions, options);
 		}
 
-		return callback(error(err));
+		return {};
 	};
 };
 
 async function readOpsBulk(cursor) {
 	var opsMap = {};
+	var op;
 
 	try {
-		do {
-			const op = await cursor.next();
+		const results = await cursor.all();
 
-			if (!op) {
-				return opsMap;
+		results.forEach((op) => {
+
+			if (op) {
+				opsMap[op.d] = opsMap[op.d] || [];
+				opsMap[op.d].push(op);
+
+				delete op.d;
+				delete op.m;
 			}
+		});
 
-			opsMap[op.d] = opsMap[op.d] || [];
-			opsMap[op.d].push(op);
-
-			delete op.d;
-			delete op.m;
-
-		} while (op);
+		return opsMap;
 	}
 	catch (err) {
 		throw error(err);
