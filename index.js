@@ -360,7 +360,7 @@ SyncArango.prototype.getSnapshotBulk = async function(collectionName, ids, field
 	catch (err) {
 		if (err.errorNum === 1203) {
 			await this._createCollection(collectionName);
-			return await this.getSnapshotBulk(collectionName, ids, fields, callback);
+			return await this.getSnapshotBulk(collectionName, ids, fields, options, callback);
 		}
 
 		return callback(error(err), []);
