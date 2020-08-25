@@ -149,11 +149,13 @@ SyncArango.prototype._getOpCollection = async function(collectionName) {
 	// when there is a lot of data in the collection.
 
 	try {
-		const index = await collection.createHashIndex([ 'd', 'v' ]);
+		const index = await collection.createIndex({ type: "hash", fields: [ 'd', 'v' ] });
 		this.opIndexes[collectionName] = true;
 	}
 	catch (error) {
-		console.warn('Warning: Could not create index for op collection:', error.stack || error);
+		console.warn('Warning: Could not create index for op collection:', error.toString());
+		console.log({ collectionName, name });
+		console.log({ collection });
 	}
 	
 	return collection;
@@ -769,7 +771,7 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 
 	try {
 		const projection = getProjection(fields, options);
-		const q = mongoAql(collectionName, normalizedInputQuery);
+		q = mongoAql(collectionName, normalizedInputQuery);
 		const cursor = await db.query(q.query, q.values);
 		const data = await cursor.map(castToProjectedSnapshotFunction(projection));
 
