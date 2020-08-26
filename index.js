@@ -774,19 +774,14 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 
 	try {
 		const projection = getProjection(fields, options);
-		console.log('1...');
 		q = mongoAql(collectionName, normalizedInputQuery);
-		console.log('2...');
 		const cursor = await db.query(q.query, q.values);
-		console.log('3...');
 		const data = await cursor.map(castToProjectedSnapshotFunction(projection));
-		console.log('4...');
 
 		// we want to maintain the order if we are getting an array of items (for example a pathquery)
 		if (Array.isArray(inputQuery)) {
 			sortResultsByIds(data, inputQuery);
 		}
-		console.log('5...');
 
 		callback(null, data);
 	}
@@ -1320,6 +1315,10 @@ function castFunctionFetchDataToSnapshot(doc) {
 }
 
 function castToSnapshot(doc) {
+	if (!doc) {
+		return new ArangoSnapshot();	
+	}
+
 	var id = doc._key;
 	var version = doc._v;
 	var type = doc._type;
