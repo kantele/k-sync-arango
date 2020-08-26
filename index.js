@@ -139,6 +139,9 @@ SyncArango.prototype._getOpCollection = async function(collectionName) {
 		return collection;
 	}
 
+	// return for now
+	return collection;
+
 	// WARNING: Creating indexes automatically like this is quite dangerous in
 	// production if we are starting with a lot of data and no indexes
 	// already. If new indexes were added or definition of these indexes were
