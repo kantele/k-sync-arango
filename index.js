@@ -283,7 +283,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		// https://github.com/arangodb/arangodb/issues/2903 
 		// rocksdb racing condition (to write)
 		console.log('');
-		console.log(err);
+		console.log(err.toString());
 		console.log({retry});
 
 		if (err.errorNum == 1200 && (!retry || retry < 100)) {
@@ -780,7 +780,8 @@ SyncArango.prototype.query = async function(collectionName, inputQuery, fields, 
 		const projection = getProjection(fields, options);
 		q = mongoAql(collectionName, normalizedInputQuery);
 		const cursor = await db.query(q.query, q.values);
-		const data = await cursor.map(castToProjectedSnapshotFunction(projection));
+		let data = await cursor.map(castToProjectedSnapshotFunction(projection));
+		data = data.filter((el) => el);
 
 		// we want to maintain the order if we are getting an array of items (for example a pathquery)
 		if (Array.isArray(inputQuery)) {
@@ -1320,7 +1321,7 @@ function castFunctionFetchDataToSnapshot(doc) {
 
 function castToSnapshot(doc) {
 	if (!doc) {
-		return new ArangoSnapshot();	
+		return;	
 	}
 
 	var id = doc._key;
