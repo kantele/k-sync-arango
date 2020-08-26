@@ -267,9 +267,6 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 
 			return true;
 		} else {
-			delete doc._rev;
-			delete doc._key;
-			delete doc._id;
 			const result = await collection.replaceByExample({_key: id, _v: doc._v - 1}, doc);
 			const succeeded = result && !!result.replaced;
 
@@ -286,7 +283,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		// https://github.com/arangodb/arangodb/issues/2903 
 		// rocksdb racing condition (to write)
 		console.log('');
-		console.log(err.toString());
+		console.log(err);
 		console.log({retry});
 
 		if (err.errorNum == 1200 && (!retry || retry < 100)) {
@@ -301,7 +298,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 			this._writeSnapshot(collectionName, id, snapshot, opLink, retry)
 		}
 		else  {
-			error(err, collectionName, id, snapshot, doc);
+			// error(err, collectionName, id, snapshot, doc);
 			// throw err.toString();
 			// console.trace();
 			// console.log(err.toString());
