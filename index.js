@@ -267,6 +267,9 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 
 			return true;
 		} else {
+			delete doc._rev;
+			delete doc._key;
+			delete doc._id;
 			const result = await collection.replaceByExample({_key: id, _v: doc._v - 1}, doc);
 			const succeeded = result && !!result.replaced;
 
