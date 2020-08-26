@@ -298,7 +298,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 			this._writeSnapshot(collectionName, id, snapshot, opLink, retry)
 		}
 		else  {
-			// error(err, collectionName, id, snapshot, doc);
+			error(err, collectionName, id, snapshot, doc);
 			// throw err.toString();
 			// console.trace();
 			// console.log(err.toString());
@@ -1402,7 +1402,7 @@ var cursorOperators = {
 , $skip: 'skip'
 };
 
-function error(err, param) {
+function error(err) {
 	if (err)
 	{
 		console.log('[k-sync-arango]', err.toString());
