@@ -244,6 +244,8 @@ SyncArango.prototype._deleteOp = async function(collectionName, opId, callback) 
 };
 
 SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapshot, opLink, retry) {
+	var doc;
+
 	try {
 		const collection = this._getCollection(collectionName);
 
@@ -252,7 +254,8 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 			return false;
 		}
 
-		const doc = castToDoc(id, snapshot, opLink);
+
+		doc = castToDoc(id, snapshot, opLink);
 
 		if (doc._v === 1) {
 			await collection.save(doc)
@@ -294,7 +297,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 			this._writeSnapshot(collectionName, id, snapshot, opLink, retry)
 		}
 		else  {
-			throw error(err, collectionName, id, snapshot);
+			throw error(err, collectionName, id, snapshot, doc);
 			// throw err.toString();
 			// console.trace();
 			// console.log(err.toString());
