@@ -86,9 +86,11 @@ SyncArango.prototype._connect = function(urls, options) {
 		config.agentOptions = { ca: require('fs').readFileSync(options.ca) };
 	}
 
+	console.log({ config, username, password, dbName })
+
 	this.arango = new arangojs.Database(config);
 
-	if (username && username) {
+	if (username && password) {
 		this.arango.useBasicAuth(username, password);
 	}
 
