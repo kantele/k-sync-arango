@@ -86,8 +86,6 @@ SyncArango.prototype._connect = function(urls, options) {
 		config.agentOptions = { ca: require('fs').readFileSync(options.ca) };
 	}
 
-	console.log({ config, username, password, dbName })
-
 	this.arango = new arangojs.Database(config);
 
 	if (username && password) {
@@ -284,9 +282,9 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		// Try 100 times if this error happens
 		// https://github.com/arangodb/arangodb/issues/2903 
 		// rocksdb racing condition (to write)
-		console.log('');
+		// console.log('');
 		console.log(err.toString());
-		console.log({retry});
+		// console.log({retry});
 
 		if (err.errorNum == 1200 && (!retry || retry < 100)) {
 			if (retry) {
@@ -300,7 +298,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 			this._writeSnapshot(collectionName, id, snapshot, opLink, retry)
 		}
 		else  {
-			error(err, collectionName, id, snapshot, doc);
+			// error(err, collectionName, id, snapshot, doc);
 			// throw err.toString();
 			// console.trace();
 			// console.log(err.toString());
