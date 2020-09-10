@@ -283,7 +283,7 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 		// https://github.com/arangodb/arangodb/issues/2903 
 		// rocksdb racing condition (to write)
 		// console.log('');
-		console.log("SyncArango._writeSnapshot:", collectionName, id, err.toString());
+		console.log("[SyncArango._writeSnapshot]", collectionName, id, err.errorNum, err.toString());
 		// console.log({retry});
 
 		if (err.errorNum == 1200 && (!retry || retry < 100)) {
@@ -296,13 +296,6 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 
 			console.log('retry _writeSnapshot', collectionName, id, retry);
 			this._writeSnapshot(collectionName, id, snapshot, opLink, retry)
-		}
-		else  {
-			// error(err, collectionName, id, snapshot, doc);
-			// throw err.toString();
-			// console.trace();
-			// console.log(err.toString());
-			// console.log(err);
 		}
 	}
 };
