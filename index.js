@@ -2,6 +2,7 @@ var DB = require('k-sync').DB;
 var mongoAql = require('mongo-aql');
 var arangojs = require('arangojs');
 var uuid = require('uuid');
+var aql = arangojs.aql;
 
 module.exports = SyncArango;
 
@@ -267,14 +268,16 @@ SyncArango.prototype._writeSnapshot = async function(collectionName, id, snapsho
 
 			return true;
 		} else {
-			const result = await collection.replaceByExample({_key: id, _v: doc._v - 1}, doc);
-			const succeeded = result && !!result.replaced;
+			const cursor = await this.arango.query("FOR doc IN @@collectionName FILTER doc._key == @id && doc._v == @ver REPLACE doc WITH @doc IN @@collectionName", { "@collectionName": collectionName, id, doc, ver: doc._v - 1 });
+
+			// const result = await collection.replaceByExample({_key: id, _v: doc._v - 1}, doc);
+			// const succeeded = result && !!result.replaced;
 
 			if (retry) {
 				console.log('retry succeeded', { collectionName, id, retry });
 			}
 
-			return succeeded;
+			return true;
 		}
 	}
 	catch (err) {
