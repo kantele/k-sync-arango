@@ -1066,7 +1066,7 @@ SyncArango.prototype.addEdge = async function(graphName, from, to, data, callbac
 			return callback('Edge definition not found.');
 		}
 
-		const edgeCollection = db.edgeCollection(edgeCollectionName);
+		const edgeCollection = db.edgeCollection ? db.edgeCollection(edgeCollectionName) : db.collection(edgeCollectionName);
 
 		// check if there is already an edge
 		// let there be only one edge (to make the connection unique)
@@ -1103,7 +1103,7 @@ SyncArango.prototype.removeEdge = async function(graphName, from, to, data, call
 			return callback('Edge definition not found.');
 		}
 
-		const edgeCollection = db.edgeCollection(edgeCollectionName);
+		const edgeCollection = db.edgeCollection ? db.edgeCollection(edgeCollectionName) : db.collection(edgeCollectionName);
 		const doc = Object.assign({ _from: from, _to: to }, data);
 
 		await edgeCollection.removeByExample(doc);
@@ -1132,7 +1132,7 @@ SyncArango.prototype.removeVertex = async function(graphName, vertex, callback) 
 			return callback('Edge definition not found.');
 		}
 
-		const edgeCollection = db.edgeCollection(edgeCollectionName);
+		const edgeCollection = db.edgeCollection ? db.edgeCollection(edgeCollectionName) : db.collection(edgeCollectionName);
 		await edgeCollection.removeByExample({ _from: vertex });
 		await edgeCollection.removeByExample({ _to: vertex });
 	}
@@ -1156,7 +1156,7 @@ SyncArango.prototype.setGraphData = async function(graphName, from, to, data, ca
 			return callback('Edge definition not found.');
 		}
 
-		const edgeCollection = db.edgeCollection(edgeCollectionName);
+		const edgeCollection = db.edgeCollection ? db.edgeCollection(edgeCollectionName) : db.collection(edgeCollectionName);
 
 		// check if there is already an edge
 		// let there be only one edge (to make the connection unique)
